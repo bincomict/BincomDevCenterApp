@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      // Quiet down benign Vite HMR reconnection warnings and WebSocket rejections
+      window.addEventListener('unhandledrejection', function(event) {
+        var reason = event.reason ? (event.reason.message || String(event.reason)) : '';
+        if (
+          /websocket|closed without opened|failed to connect/i.test(reason)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          console.debug('Muted benign development websocket rejection:', reason);
+        }
+      }, true);
+
+      window.addEventListener('error', function(event) {
+        var msg = event.message || '';
+        if (
+          /websocket|closed without opened|failed to connect/i.test(msg)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          console.debug('Muted benign development websocket error:', msg);
+        }
+      }, true);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

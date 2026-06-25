@@ -1,0 +1,8 @@
+{
+  "name": "Bincom Dev Center Platform",
+  "description": "A centralized Talent Development and Operational Management ecosystem for structured learning, attendance tracking, microservice modules, and project cooperation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
