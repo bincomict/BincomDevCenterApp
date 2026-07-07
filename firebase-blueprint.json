@@ -1,0 +1,145 @@
+{
+  "entities": {
+    "Profile": {
+      "title": "Profile",
+      "description": "User profile containing role, track, and learning details.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "fullName": { "type": "string" },
+        "education": { "type": "string" },
+        "occupation": { "type": "string" },
+        "techExperience": { "type": "string" },
+        "track": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "status": { "type": "string", "enum": ["onboarding", "active", "suspended", "admin"] },
+        "score": { "type": "number" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "learningLevel": { "type": "string" },
+        "previousCourseCompleted": { "type": "boolean" },
+        "assignedTasks": { "type": "array" }
+      },
+      "required": ["id", "email", "username", "fullName", "role", "status"]
+    },
+    "Meeting": {
+      "title": "Meeting",
+      "description": "Scheduled alignment and training session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "type": { "type": "string" },
+        "timeString": { "type": "string" },
+        "trackId": { "type": "string" },
+        "jitsiUrl": { "type": "string" },
+        "scheduleDays": { "type": "array" },
+        "meetingDates": { "type": "array" },
+        "isActive": { "type": "boolean" },
+        "projectId": { "type": "string" }
+      },
+      "required": ["title", "type", "timeString"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Marked attendance logs for alignment sessions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "fullName": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "meetingTitle": { "type": "string" },
+        "meetingType": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["Attended", "Late", "Missed"] },
+        "track": { "type": "string" },
+        "meetingDate": { "type": "string" }
+      },
+      "required": ["userId", "meetingId", "status", "meetingDate"]
+    },
+    "Standup": {
+      "title": "Standup",
+      "description": "Daily student check-in summary of tasks, plans, and blockers.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "track": { "type": "string" },
+        "yesterdayTasks": { "type": "string" },
+        "todayTasks": { "type": "string" },
+        "blockers": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "fullName", "todayTasks", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/profiles/{profileId}": {
+      "schema": "Profile",
+      "description": "User profiles of students and administrators."
+    },
+    "/meetings/{meetingId}": {
+      "schema": "Meeting",
+      "description": "Live and scheduled cohort sessions."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": "AttendanceRecord",
+      "description": "Marked logs for meeting attendance."
+    },
+    "/standups/{standupId}": {
+      "schema": "Standup",
+      "description": "Trainee morning alignment summaries."
+    },
+    "/personalDevelopment/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "PD updates / Microservice reports."
+    },
+    "/techUpdates/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "Technical track assignments / tech logs."
+    },
+    "/weeklyDrills/{drillId}": {
+      "schema": { "$ref": "object" },
+      "description": "Weekly hands-on tasks created by administrators."
+    },
+    "/drillSubmissions/{submissionId}": {
+      "schema": { "$ref": "object" },
+      "description": "Submitted responses to weekly drills."
+    },
+    "/socialLogs/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "Social media learning proof logs."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "object" },
+      "description": "Master student project groups."
+    },
+    "/dailyReports/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "Detailed end-of-day reports."
+    },
+    "/reminders/{reminderId}": {
+      "schema": { "$ref": "object" },
+      "description": "User notifications sent by mentors."
+    },
+    "/meetingAssignments/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "Specific user allocations to private sessions."
+    },
+    "/meetingHistory/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "Historic meeting log archives."
+    },
+    "/attendanceAuditLogs/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "Admin session joining track records."
+    },
+    "/metadata/{id}": {
+      "schema": { "$ref": "object" },
+      "description": "System config details like meeting types and metrics."
+    }
+  }
+}

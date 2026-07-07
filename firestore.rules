@@ -1,0 +1,148 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Global Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && 
+        exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default catch-all deny rule
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Profiles Collection ---
+    match /profiles/{profileId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == profileId && request.resource.data.role != 'admin';
+      allow update: if isAdmin() || (
+        isSignedIn() && request.auth.uid == profileId && 
+        request.resource.data.role == resource.data.role && 
+        (!request.resource.data.keys().hasAll(['status']) || request.resource.data.status == resource.data.status)
+      );
+      allow delete: if isAdmin();
+    }
+
+    // --- Meetings Collection ---
+    match /meetings/{meetingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // --- Attendance Records ---
+    match /attendance/{attendanceId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // --- Standups Records ---
+    match /standups/{standupId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // --- Personal Development / Microservices summaries ---
+    match /personalDevelopment/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // --- Technical Track updates / assignments ---
+    match /techUpdates/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // --- Weekly Drills ---
+    match /weeklyDrills/{drillId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // --- Weekly Drill Submissions ---
+    match /drillSubmissions/{submissionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin() || (
+        isSignedIn() && resource.data.userId == request.auth.uid && 
+        request.resource.data.status == resource.data.status && 
+        request.resource.data.score == resource.data.score &&
+        (!request.resource.data.keys().hasAll(['remarks']) || request.resource.data.remarks == resource.data.remarks)
+      );
+      allow delete: if isAdmin();
+    }
+
+    // --- Social Media Proof Logs ---
+    match /socialLogs/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // --- Master Student Project Groups ---
+    match /projects/{projectId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // --- Daily Reports ---
+    match /dailyReports/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
+      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // --- User Reminders ---
+    match /reminders/{reminderId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow write: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    // --- Meeting Assignments ---
+    match /meetingAssignments/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // --- Meeting History logs ---
+    match /meetingHistory/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // --- Attendance Audit Logs (Admin Only) ---
+    match /attendanceAuditLogs/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // --- Metadata and System Config ---
+    match /metadata/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
