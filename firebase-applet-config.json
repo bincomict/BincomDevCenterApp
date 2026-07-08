@@ -1,10 +1,9 @@
 {
-  "projectId": "southern-parser-ldpgw",
-  "appId": "1:677385168361:web:c22c7c2da5d59c4a041778",
-  "apiKey": "AIzaSyA75wiroZ2vLdl_redla1fxUrHccA52qi8",
-  "authDomain": "southern-parser-ldpgw.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-bincomdevcenterp-bdcf743b-8150-4a11-9909-0482ce129ca9",
-  "storageBucket": "southern-parser-ldpgw.firebasestorage.app",
-  "messagingSenderId": "677385168361",
-  "measurementId": ""
+  "projectId": "bincom-dev-center-app-dev",
+  "appId": "1:1021237943935:web:b264cbaabe59167598294a",
+  "apiKey": "AIzaSyC7ZuPoJaZ5ik3q3fIF_Iwj7CYW_H0qW_I",
+  "authDomain": "bincom-dev-center-app-dev.firebaseapp.com",
+  "storageBucket": "bincom-dev-center-app-dev.firebasestorage.app",
+  "messagingSenderId": "1021237943935",
+  "measurementId": "G-T6P4ZEV2MH"
 }
