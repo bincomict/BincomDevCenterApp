@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { LogIn, UserPlus, Eye, EyeOff, KeyRound, X, ShieldAlert, Sparkles } from "lucide-react";
 import { Profile } from "../types";
+import { loginUser, registerUser, adminBypassLogin } from "../firebaseService";
 
 interface AuthPageProps {
   onAuthSuccess: (profile: Profile) => void;
@@ -40,31 +41,15 @@ export default function AuthPage({ onAuthSuccess, profiles }: AuthPageProps) {
 
     if (!identifier) {
       setError("Please enter your username or email address.");
+      setLoading(false);
       return;
     }
 
     try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, password: loginPassword }),
-      });
-
-      const responseText = await response.text();
-      let data: any = {};
-      try {
-        data = JSON.parse(responseText);
-      } catch (jsonErr) {
-        throw new Error(responseText || `Connection failed with status code ${response.status}`);
-      }
-
-      if (!response.ok) {
-        throw new Error(data.error || "Authentication failed");
-      }
-
+      const profile = await loginUser(identifier, loginPassword);
       setSuccess("Successfully authenticated! Diverting to workspace...");
       setTimeout(() => {
-        onAuthSuccess(data.profile);
+        onAuthSuccess(profile);
       }, 150);
     } catch (err: any) {
       setError(err.message || "Failed to find this staff or student profile on our registry.");
@@ -104,36 +89,12 @@ export default function AuthPage({ onAuthSuccess, profiles }: AuthPageProps) {
     }
 
     try {
-      // Derive nice Full Name presentation from username input
       const capitalizedFullName = regUsername.charAt(0).toUpperCase() + regUsername.slice(1);
-
-      const response = await fetch("/api/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: regEmail,
-          username: regUsername.toLowerCase(),
-          fullName: capitalizedFullName,
-          isAdmin: false, // Default registered accounts are students
-          password: regPassword,
-        }),
-      });
-
-      const responseText = await response.text();
-      let data: any = {};
-      try {
-        data = JSON.parse(responseText);
-      } catch (jsonErr) {
-        throw new Error(responseText || `Account creation failed with status ${response.status}`);
-      }
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to create account.");
-      }
-
+      const profile = await registerUser(regEmail, regUsername, capitalizedFullName, regPassword);
+      
       setSuccess("Account provisioned successfully! Redirecting straight to onboarding...");
       setTimeout(() => {
-        onAuthSuccess(data.profile);
+        onAuthSuccess(profile);
       }, 150);
     } catch (err: any) {
       setError(err.message || "Something went wrong during sign up.");
@@ -145,23 +106,8 @@ export default function AuthPage({ onAuthSuccess, profiles }: AuthPageProps) {
   const handleAdminBypass = async () => {
     setError("");
     try {
-      const response = await fetch("/api/auth/admin-bypass", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: "admin-1",
-          email: "hadekunleabdulwally@gmail.com",
-          username: "hadekunle",
-          fullName: "Adewale Kunle (Owner Bypass)",
-        }),
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        onAuthSuccess(data.profile);
-      } else {
-        throw new Error("Unable to trigger admin bypass");
-      }
+      const profile = await adminBypassLogin();
+      onAuthSuccess(profile);
     } catch (err: any) {
       setError("Bypass failure: " + err.message);
     }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Profile } from "../types";
 import { Play, Pause, FileCheck, CheckSquare, ShieldCheck, AlertCircle, LayoutDashboard, Volume2 } from "lucide-react";
+import { clearOrientation } from "../firebaseService";
 
 interface OrientationGateProps {
   profile: Profile;
@@ -16,6 +17,10 @@ export default function OrientationGate({ profile, onOrientationCleared }: Orien
   // Acknowledgment box state
   const [agreed, setAgreed] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, []);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -41,16 +46,8 @@ export default function OrientationGate({ profile, onOrientationCleared }: Orien
     setIsClearing(true);
 
     try {
-      const response = await fetch("/api/profile/clear-orientation", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-
-      onOrientationCleared(data.profile);
+      const updatedProfile = await clearOrientation(profile.id);
+      onOrientationCleared(updatedProfile);
     } catch (err) {
       console.error(err);
       alert("Orientation log processing failed.");

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Profile, AssessmentQuestion } from "../types";
 import { TRACK_QUESTIONS, TECH_TRACKS } from "../data/assessmentQuestions";
 import { getLongTrackName, getCleanTrackName } from "../utils/trackUtils";
+import { resetProfileToOnboarding, submitAssessment, retakeAssessment, clearOrientation } from "../firebaseService";
 import { 
   XSquare, 
   CheckCircle2, 
@@ -74,6 +75,10 @@ export default function TrackAssessment({ profile, onAssessmentCompleted, onPivo
 
   // Video timer effect
   useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [profile.status, profile.score]);
+
+  useEffect(() => {
     let timer: NodeJS.Timeout;
     if (videoPlaying) {
       timer = setInterval(() => {
@@ -103,17 +108,8 @@ export default function TrackAssessment({ profile, onAssessmentCompleted, onPivo
 
   const handleBackToOnboarding = async () => {
     try {
-      const response = await fetch("/api/profile/reset-to-onboarding", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id })
-      });
-      const data = await response.json();
-      if (response.ok) {
-        onPivotTrack(data.profile);
-      } else {
-        setError(data.error || "Failed to reset onboarding stage.");
-      }
+      const updatedProfile = await resetProfileToOnboarding(profile.id);
+      onPivotTrack(updatedProfile);
     } catch (err) {
       console.error(err);
       setError("An error occurred while resetting.");
@@ -135,21 +131,11 @@ export default function TrackAssessment({ profile, onAssessmentCompleted, onPivo
     });
 
     const scorePercentage = Math.round((correctCount / questions.length) * 100);
+    const calculatedStatus = scorePercentage >= 70 ? "assessment_passed" : "assessment_failed";
 
     try {
-      const response = await fetch("/api/profile/submit-assessment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          scorePercentage
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to submit score.");
-
-      onAssessmentCompleted(data.profile);
+      const updatedProfile = await submitAssessment(profile.id, scorePercentage, calculatedStatus);
+      onAssessmentCompleted(updatedProfile);
     } catch (err: any) {
       console.error(err);
       alert(err.message || "Could not process assessment scores.");
@@ -160,18 +146,9 @@ export default function TrackAssessment({ profile, onAssessmentCompleted, onPivo
 
   const handleRetake = async () => {
     try {
-      const response = await fetch("/api/profile/retake-assessment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id
-        })
-      });
-      const data = await response.json();
-      if (response.ok) {
-        setAnswers({});
-        onPivotTrack(data.profile);
-      }
+      const updatedProfile = await retakeAssessment(profile.id);
+      setAnswers({});
+      onPivotTrack(updatedProfile);
     } catch (e) {
       console.error(e);
     }
@@ -182,17 +159,8 @@ export default function TrackAssessment({ profile, onAssessmentCompleted, onPivo
     setIsClearingOrientation(true);
 
     try {
-      const response = await fetch("/api/profile/clear-orientation", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-
-      // Successfully cleared orientation!
-      onAssessmentCompleted(data.profile);
+      const updatedProfile = await clearOrientation(profile.id);
+      onAssessmentCompleted(updatedProfile);
     } catch (err: any) {
       console.error(err);
       alert(err.message || "Failed to confirm orientation compliance.");

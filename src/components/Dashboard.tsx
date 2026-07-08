@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Profile, AttendanceRecord, Meeting } from "../types";
+import { completeTask } from "../firebaseService";
 import { 
   Compass, 
   Sparkles, 
@@ -46,6 +47,34 @@ interface DashboardProps {
   setActiveSubTab: (subTab: "kd" | "standups" | "pd" | "tech" | "drills" | "social") => void;
   onStateUpdate?: () => void;
 }
+
+const getMicroserviceIcon = (iconName: string) => {
+  switch (iconName) {
+    case "BookOpen": return <BookOpen className="w-5 h-5 text-[#4B5E40] mb-2" />;
+    case "Award": return <Award className="w-5 h-5 text-emerald-600 mb-2" />;
+    case "Sparkles": return <Sparkles className="w-5 h-5 text-indigo-600 mb-2" />;
+    case "Laptop": return <Laptop className="w-5 h-5 text-rose-500 mb-2" />;
+    case "Compass": return <Compass className="w-5 h-5 text-sky-500 mb-2" />;
+    case "Users": return <Users className="w-5 h-5 text-purple-600 mb-2" />;
+    case "Target": return <Target className="w-5 h-5 text-teal-600 mb-2" />;
+    case "Calendar": return <Calendar className="w-5 h-5 text-orange-500 mb-2" />;
+    default: return <Layers className="w-5 h-5 text-gray-500 mb-2" />;
+  }
+};
+
+const getMicroserviceHoverClass = (iconName: string) => {
+  switch (iconName) {
+    case "BookOpen": return "hover:text-[#4B5E40]";
+    case "Award": return "hover:text-emerald-700";
+    case "Sparkles": return "hover:text-indigo-700";
+    case "Laptop": return "hover:text-rose-700";
+    case "Compass": return "hover:text-sky-700";
+    case "Users": return "hover:text-purple-700";
+    case "Target": return "hover:text-teal-700";
+    case "Calendar": return "hover:text-orange-700";
+    default: return "hover:text-[#4B5E40]";
+  }
+};
 
 export default function Dashboard({ 
   profile, 
@@ -199,53 +228,64 @@ export default function Dashboard({
   const isEveningChecked = getAttendanceForMeeting("meet_4");
   const isKdChecked = getAttendanceForMeeting("meet_2");
 
-  const ongoingTasks = [
+  const ongoingTasksFromDb = state.tasks && state.tasks.length > 0 ? state.tasks : [
     {
       id: "tsk_kd",
       title: "KD (Knowledge Development) Session Participation",
       description: "Attend at least 2 sessions per week, answer LMS questions, and facilitate once a month.",
       due: "Every Tuesday & Thursday 09:00 AM WAT",
-      priority: "High",
-      progress: isKdChecked ? "Checked-In" : "Ongoing"
+      priority: "High"
     },
     {
       id: "tsk_morning",
       title: "Morning Stand-up Live Session",
       description: "Connect to Jitsi team stand-up in the morning for task planning & alignment.",
       due: `Daily ${standupDetails.morningTime}`,
-      priority: "High",
-      progress: isMorningChecked ? "Checked-In" : "Pending"
+      priority: "High"
     },
     {
       id: "tsk_evening",
       title: "Evening Stand-up Live Session",
       description: "Connect to Jitsi team stand-up in the evening for progress review.",
       due: `Daily ${standupDetails.eveningTime}`,
-      priority: "High",
-      progress: isEveningChecked ? "Checked-In" : "Pending"
+      priority: "High"
     },
     {
       id: "tsk_report",
       title: "Daily Report Submission",
       description: "Log your daily accomplishments, personal development hours, and roadblocks on your Slack/Module channel.",
       due: "Daily by 05:00 PM (WAT)",
-      priority: "High",
-      progress: "Ongoing"
+      priority: "High"
     }
   ];
+
+  const hasSubmittedReportToday = (state.dailyReports || []).some(
+    (r: any) => r.userId === profile.id && r.date === getLagosDateString(currentTime)
+  );
+
+  const ongoingTasks = ongoingTasksFromDb.map((task: any) => {
+    let progress = "Ongoing";
+    if (task.id === "tsk_kd") {
+      progress = isKdChecked ? "Checked-In" : "Ongoing";
+    } else if (task.id === "tsk_morning") {
+      progress = isMorningChecked ? "Checked-In" : "Pending";
+    } else if (task.id === "tsk_evening") {
+      progress = isEveningChecked ? "Checked-In" : "Pending";
+    } else if (task.id === "tsk_report") {
+      progress = hasSubmittedReportToday ? "Checked-In" : "Ongoing";
+    }
+    return {
+      ...task,
+      progress
+    };
+  });
 
   // Complete assigned custom task
   const handleCompleteCustomTask = async (taskId: string) => {
     try {
-      const res = await fetch("/api/student/complete-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id, taskId })
-      });
-      if (res.ok) {
-        if (onStateUpdate) {
-          onStateUpdate();
-        }
+      await completeTask(profile.id, taskId);
+      if (onStateUpdate) {
+        onStateUpdate();
       }
     } catch (e) {
       console.error("Failed to complete custom task", e);
@@ -323,6 +363,11 @@ export default function Dashboard({
   };
 
   const pathwayBlueprint = getPathwayBlueprint(profile.track || "");
+  const dynamicPathway = state.careerPathways ? {
+    foundation: (state.careerPathways.foundation || []).map((f: any) => f.title),
+    technical: (state.careerPathways.trackSplit || []).map((t: any) => t.title),
+    other: (state.careerPathways.lateralRoles || []).map((l: any) => l.title)
+  } : pathwayBlueprint;
   
   // Helpers to check user level and team track eligibility for dynamic database meetings
   const getLevelsText = (trackId: any, userLevels?: any): string => {
@@ -850,125 +895,30 @@ export default function Dashboard({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {/* KD */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <BookOpen className="w-5 h-5 text-[#4B5E40] mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Knowledge Development</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Learning and development platform.</p>
+          {(state.microservices && state.microservices.length > 0 ? state.microservices : [
+            { id: "ms_kd", title: "Knowledge Development", description: "Learning and development platform.", linkText: "Open KD", tab: "hub", icon: "BookOpen" },
+            { id: "ms_pd", title: "Personal Development", description: "Submit your daily learning summary.", linkText: "Write Summary", tab: "microservices", subTab: "pd", icon: "Award" },
+            { id: "ms_drills", title: "Weekly Drills", description: "Programming challenges to improve your skills.", linkText: "Learn Skills", tab: "microservices", subTab: "drills", icon: "Sparkles" },
+            { id: "ms_tech", title: "Tech Updates", description: "Share & discuss hot technical links.", linkText: "Share Links", tab: "microservices", subTab: "tech", icon: "Laptop" },
+            { id: "ms_kd_exchange", title: "Knowledge Exchange", description: "Collaborate on core technical concepts.", linkText: "Click to Enter", tab: "microservices", subTab: "social", icon: "Compass" },
+            { id: "ms_social", title: "Social Engagement", description: "Engage with track peer updates.", linkText: "Click to Enter", tab: "microservices", subTab: "social", icon: "Users" },
+            { id: "ms_influence", title: "Social Influence", description: "Promote tech insights on public forums.", linkText: "Click to Enter", tab: "microservices", subTab: "social", icon: "Target" },
+            { id: "ms_events", title: "External Events", description: "Hackathons, webinars and open meetups.", linkText: "Click to Enter", tab: "microservices", subTab: "social", icon: "Calendar" }
+          ]).map((ms: any) => (
+            <div key={ms.id} className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between animate-fade-in">
+              <div>
+                {getMicroserviceIcon(ms.icon)}
+                <h4 className="font-extrabold text-xs text-gray-950">{ms.title}</h4>
+                <p className="text-[11px] text-gray-400 mt-1 leading-normal">{ms.description}</p>
+              </div>
+              <button 
+                onClick={() => handleMicroserviceClick(ms.tab, ms.subTab)}
+                className={`mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 ${getMicroserviceHoverClass(ms.icon)} transition flex items-center justify-center gap-1 cursor-pointer`}
+              >
+                {ms.linkText || "Click to Enter"} <ChevronRight className="w-3 h-3" />
+              </button>
             </div>
-            <button 
-              onClick={() => handleMicroserviceClick("hub")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-[#4B5E40] transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Open KD <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Personal Development */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Award className="w-5 h-5 text-emerald-600 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Personal Development</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Submit your daily learning summary.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "pd")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-emerald-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Write Summary <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Weekly Drills */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Sparkles className="w-5 h-5 text-indigo-600 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Weekly Drills</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Programming challenges to improve your skills.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "drills")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-indigo-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Learn Skills <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Tech Updates */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Laptop className="w-5 h-5 text-rose-500 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Tech Updates</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Share & discuss hot technical links.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "tech")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-rose-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Share Links <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Knowledge Exchange */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Compass className="w-5 h-5 text-sky-500 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Knowledge Exchange</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Collaborate on core technical concepts.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "social")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-sky-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Click to Enter <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Social Engagement */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Users className="w-5 h-5 text-purple-600 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Social Engagement</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Engage with track peer updates.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "social")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-purple-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Click to Enter <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Social Influence */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Target className="w-5 h-5 text-teal-600 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">Social Influence</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Promote tech insights on public forums.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "social")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-teal-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Click to Enter <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* External Events */}
-          <div className="bg-white rounded-xl border border-gray-150 p-4 hover:border-[#4B5E40]/40 transition hover:shadow-2xs flex flex-col justify-between">
-            <div>
-              <Calendar className="w-5 h-5 text-orange-500 mb-2" />
-              <h4 className="font-extrabold text-xs text-gray-950">External Events</h4>
-              <p className="text-[11px] text-gray-400 mt-1 leading-normal">Hackathons, webinars and open meetups.</p>
-            </div>
-            <button 
-              onClick={() => handleMicroserviceClick("microservices", "social")}
-              className="mt-3.5 w-full py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold text-gray-600 hover:text-orange-700 transition flex items-center justify-center gap-1 cursor-pointer"
-            >
-              Click to Enter <ChevronRight className="w-3 h-3" />
-            </button>
-          </div>
+          ))}
         </div>
       </div>
 
@@ -1243,7 +1193,7 @@ export default function Dashboard({
               <p className="font-extrabold text-blue-950 uppercase tracking-wide text-[11px]">Starting Career (Foundational Roles)</p>
             </div>
             <div className="divide-y divide-gray-200/50 pt-1 space-y-1.5">
-              {pathwayBlueprint.foundation.map((role, rIdx) => (
+              {dynamicPathway.foundation.map((role, rIdx) => (
                 <div key={rIdx} className="pt-1.5 text-gray-700 font-medium flex items-center gap-1.5">
                   <span className="text-[#4B5E40] font-black font-mono">▪</span>
                   <span>{role}</span>
@@ -1259,7 +1209,7 @@ export default function Dashboard({
               <p className="font-extrabold text-emerald-950 uppercase tracking-wide text-[11px]">Technical Track</p>
             </div>
             <div className="divide-y divide-gray-200/50 pt-1 space-y-1.5">
-              {pathwayBlueprint.technical.map((role, rIdx) => (
+              {dynamicPathway.technical.map((role, rIdx) => (
                 <div key={rIdx} className="pt-1.5 text-gray-700 font-bold flex items-center gap-1.5">
                   <span className="text-emerald-600 font-black font-mono">▪</span>
                   <span>{role}</span>
@@ -1275,7 +1225,7 @@ export default function Dashboard({
               <p className="font-extrabold text-indigo-950 uppercase tracking-wide text-[11px]">Other Possible Roles</p>
             </div>
             <div className="max-h-[200px] overflow-y-auto pr-1 text-gray-650 space-y-1.5 pt-1">
-              {pathwayBlueprint.other.map((role, rIdx) => (
+              {dynamicPathway.other.map((role, rIdx) => (
                 <div key={rIdx} className="text-[11px] font-medium flex items-center gap-1.5">
                   <span className="text-indigo-500 font-mono">▪</span>
                   <span>{role}</span>

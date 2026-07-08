@@ -7,6 +7,23 @@ import {
 } from "../types";
 import { getCleanTrackName, getLagosDateString } from "../utils/trackUtils";
 import {
+  saveMeetingType,
+  deleteMeetingType,
+  reviewStudent,
+  addDrill,
+  gradeDrillSubmission,
+  sendReminder,
+  changeLevel,
+  assignTask,
+  saveMeeting,
+  deleteMeeting,
+  triggerSimulatedCron,
+  assignMicroserviceOwner,
+  assignKDCount,
+  updateAppConfigField
+} from "../firebaseService";
+import { toast } from "./Toast";
+import {
   Users,
   BarChart4,
   ShieldCheck,
@@ -28,6 +45,12 @@ import {
   Trash2,
   Edit2,
   History,
+  Settings,
+  Layers,
+  GraduationCap,
+  Laptop,
+  Compass,
+  Sparkles
 } from "lucide-react";
 import AttendanceHistoryTab from "./AttendanceHistoryTab";
 
@@ -228,15 +251,80 @@ export default function AdminPanel({
     | "pd_desk"
     | "standup_desk"
     | "attendance_history"
+    | "tasks_config"
+    | "microservices_config"
+    | "pathways_config"
   >("funnel");
 
   const [loading, setLoading] = useState(false);
+  const [purgingDb, setPurgingDb] = useState(false);
+  const [seedingDb, setSeedingDb] = useState(false);
   const [meetingToDeleteId, setMeetingToDeleteId] = useState<string | null>(
     null,
   );
   const [isDeletingMeeting, setIsDeletingMeeting] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Default Tasks Editor States
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [taskEditorTitle, setTaskEditorTitle] = useState("");
+  const [taskEditorDesc, setTaskEditorDesc] = useState("");
+  const [taskEditorDue, setTaskEditorDue] = useState("");
+  const [taskEditorPriority, setTaskEditorPriority] = useState<"High" | "Medium" | "Low">("Medium");
+
+  // Dashboard Microservices Editor States
+  const [editingMicroserviceId, setEditingMicroserviceId] = useState<string | null>(null);
+  const [msEditorTitle, setMsEditorTitle] = useState("");
+  const [msEditorDesc, setMsEditorDesc] = useState("");
+  const [msEditorLinkText, setMsEditorLinkText] = useState("");
+  const [msEditorTab, setMsEditorTab] = useState("");
+  const [msEditorSubTab, setMsEditorSubTab] = useState("");
+  const [msEditorIcon, setMsEditorIcon] = useState("");
+
+  // Career Pathways Editor States
+  const [editingPathwaySection, setEditingPathwaySection] = useState<"foundation" | "trackSplit" | "lateralRoles" | null>(null);
+  const [editingPathwayIndex, setEditingPathwayIndex] = useState<number | null>(null);
+  const [pathwayEditorTitle, setPathwayEditorTitle] = useState("");
+  const [pathwayEditorDesc, setPathwayEditorDesc] = useState("");
+
+  // Custom iframe-safe dialog confirmation state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    isDanger?: boolean;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
+
+  const showConfirm = (options: {
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    isDanger?: boolean;
+    onConfirm: () => void;
+  }) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: options.title,
+      message: options.message,
+      confirmText: options.confirmText,
+      cancelText: options.cancelText,
+      isDanger: options.isDanger,
+      onConfirm: () => {
+        options.onConfirm();
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+      },
+    });
+  };
 
   // Sub-tabs states
   const [selectedOwners, setSelectedOwners] = useState<Record<string, string>>(
@@ -475,13 +563,7 @@ export default function AdminPanel({
     }
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/meeting-types/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldName, name: cleanName }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await saveMeetingType(cleanName, oldName);
 
       onStateUpdate();
       triggerSuccess(
@@ -530,16 +612,7 @@ export default function AdminPanel({
     if (!meetingTypeToDelete) return;
     setIsDeletingMeetingType(true);
     try {
-      const res = await fetch("/api/admin/meeting-types/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: meetingTypeToDelete,
-          allowDeleteSystem: allowDeleteSystemTypes,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await deleteMeetingType(meetingTypeToDelete);
 
       onStateUpdate();
       triggerSuccess(
@@ -643,12 +716,14 @@ export default function AdminPanel({
   const triggerSuccess = (msg: string) => {
     setSuccessMsg(msg);
     setErrorMsg("");
+    toast.success(msg);
     setTimeout(() => setSuccessMsg(""), 3500);
   };
 
   const triggerError = (msg: string) => {
     setErrorMsg(msg);
     setSuccessMsg("");
+    toast.error(msg);
   };
 
   // --- 1. COMPUTING METRICS ---
@@ -757,13 +832,7 @@ export default function AdminPanel({
   const handleStudentAction = async (studentId: string, action: string) => {
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/review-student", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId, action }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await reviewStudent(studentId, action);
 
       triggerSuccess(
         `Student status updated successfully via action: ${action}`,
@@ -783,17 +852,7 @@ export default function AdminPanel({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/add-drill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: drillTitle,
-          description: drillDesc,
-          link: drillLink,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await addDrill(drillTitle, drillDesc, drillLink);
 
       setDrillTitle("");
       setDrillDesc("");
@@ -816,18 +875,8 @@ export default function AdminPanel({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/grade-drill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          submissionId: gradingSubId,
-          status: gradingStatus,
-          feedback: gradingFeedback,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      const score = 100; // default/placeholder or computed if any
+      await gradeDrillSubmission(gradingSubId, score, gradingFeedback, gradingStatus);
 
       setGradingSubId("");
       setGradingFeedback("");
@@ -849,17 +898,7 @@ export default function AdminPanel({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/send-reminder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: targetStudentId,
-          message: reminderMsg,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await sendReminder(targetStudentId, reminderMsg);
 
       setReminderMsg("");
       setTargetStudentId("");
@@ -878,13 +917,7 @@ export default function AdminPanel({
   const handleChangeLevel = async (studentId: string, level: string) => {
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/change-level", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: studentId, level }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await changeLevel(studentId, level);
 
       triggerSuccess(`Student level updated successfully to: ${level}`);
       onStateUpdate();
@@ -903,19 +936,7 @@ export default function AdminPanel({
     }
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/assign-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: studentId,
-          title: customTaskTitle,
-          description: customTaskDesc,
-          dueDate: customTaskDue,
-          priority: customTaskPriority,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await assignTask(studentId, customTaskTitle, customTaskDesc, customTaskDue, customTaskPriority as any);
 
       triggerSuccess(
         `Task "${customTaskTitle}" custom-assigned successfully to student.`,
@@ -960,31 +981,24 @@ export default function AdminPanel({
     }
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/meetings/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: editingMeetingId || undefined,
-          title: meetingTitle,
-          type: meetingType,
-          timeString: meetingTime,
-          jitsiUrl: meetingUrl,
-          // Support multiple team track selections & optional selections
-          trackId: meetingTrack.length > 0 ? meetingTrack : null,
-          userLevels: meetingTrack.length > 0 ? meetingTrack : null,
-          targetTeamTrackEligibility:
-            meetingTeamTracks.length > 0 ? meetingTeamTracks : null,
-          scheduleDays: meetingScheduleDays,
-          meetingDates,
-          assignedUserIds: meetingAssignedUsers,
-          duration: meetingDuration,
-          organizer: meetingOrganizer,
-          status: meetingStatus,
-          description: meetingDescription,
-        }),
+      await saveMeeting({
+        id: editingMeetingId || undefined,
+        title: meetingTitle,
+        type: meetingType,
+        timeString: meetingTime,
+        jitsiUrl: meetingUrl,
+        trackId: meetingTrack.length > 0 ? meetingTrack : null,
+        userLevels: meetingTrack.length > 0 ? meetingTrack : null,
+        targetTeamTrackEligibility:
+          meetingTeamTracks.length > 0 ? meetingTeamTracks : null,
+        scheduleDays: meetingScheduleDays,
+        meetingDates,
+        assignedUserIds: meetingAssignedUsers,
+        duration: meetingDuration,
+        organizer: meetingOrganizer,
+        status: meetingStatus,
+        description: meetingDescription,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       triggerSuccess(
         editingMeetingId
@@ -1028,15 +1042,7 @@ export default function AdminPanel({
     setIsDeletingMeeting(true);
     console.log(`Initiating delete for meeting ID: ${meetingId}`);
     try {
-      const res = await fetch("/api/admin/meetings/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: meetingId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Unknown error during deletion");
-      }
+      await deleteMeeting(meetingId);
 
       triggerSuccess("Meeting deleted successfully.");
       if (meetingId === editingMeetingId) {
@@ -1053,7 +1059,7 @@ export default function AdminPanel({
   };
 
   // Simulated 00:00 WAT Cron script trigger
-  const triggerSimulatedCron = async () => {
+  const handleTriggerSimulatedCron = async () => {
     setCronRunning(true);
     setCronLogs([
       "⏱️ 00:00 WAT Scheduler triggered: starting nightly workspace cron job...",
@@ -1063,30 +1069,323 @@ export default function AdminPanel({
 
     setTimeout(async () => {
       try {
-        const res = await fetch("/api/cron/trigger", { method: "POST" });
-        const data = await res.json();
+        const data = await triggerSimulatedCron();
 
-        if (res.ok) {
-          setCronLogs((prev) => [
-            ...prev,
-            "⚡ Scanning finished. Target projects verified: Bincom Dev applet, eMigr8 pathway.",
-            "✔️ Regenerating Jitsi coordinates & standup links baseline database entities...",
-            `📅 Cron Success Code: Generated ${data.meetings.length} brand new customized day meetings.`,
-            "💻 State synced! Workspace rejuvenated for the next 24-hour cycle.",
-          ]);
-          onStateUpdate();
-        } else {
-          throw new Error("Cron return failed");
-        }
+        setCronLogs((prev) => [
+          ...prev,
+          "⚡ Scanning finished. Target projects verified: Bincom Dev applet, eMigr8 pathway.",
+          "✔️ Regenerating Jitsi coordinates & standup links baseline database entities...",
+          `📅 Cron Success Code: Generated ${data.meetings.length} brand new customized day meetings.`,
+          "💻 State synced! Workspace rejuvenated for the next 24-hour cycle.",
+        ]);
+        onStateUpdate();
       } catch (e: any) {
         setCronLogs((prev) => [
           ...prev,
-          "❌ CRITICAL: overnight cron process timed out: " + e.message,
+          "❌ CRITICAL: overnight cron process failed: " + e.message,
         ]);
       } finally {
         setCronRunning(false);
       }
     }, 1200);
+  };
+
+  // Purge Seed Data & Fresh Start Trigger
+  const handlePurgeDatabase = () => {
+    showConfirm({
+      title: "Purge All Mock & Seed Data",
+      message: "Are you absolutely sure you want to purge all mock and transaction data? This will clear all meetings, drills, projects, standups, and student profiles from Firestore. This action is IRREVERSIBLE.",
+      confirmText: "🗑️ Yes, Purge Everything",
+      isDanger: true,
+      onConfirm: async () => {
+        setPurgingDb(true);
+        setErrorMsg("");
+        setSuccessMsg("");
+        try {
+          const { purgeDatabase } = await import("../seed");
+          await purgeDatabase(adminProfile?.id);
+          triggerSuccess("Database successfully purged! All seed data has been deleted and you have a completely fresh workspace.");
+          onStateUpdate();
+        } catch (err: any) {
+          triggerError("Failed to purge database: " + err.message);
+        } finally {
+          setPurgingDb(false);
+        }
+      }
+    });
+  };
+
+  // Seed Database Trigger
+  const handleSeedDatabase = () => {
+    showConfirm({
+      title: "Seed Default Configurations",
+      message: "Are you sure you want to seed default configurations (tasks, microservices, pathways) into the database?",
+      confirmText: "🌱 Yes, Seed Database",
+      isDanger: false,
+      onConfirm: async () => {
+        setSeedingDb(true);
+        setErrorMsg("");
+        setSuccessMsg("");
+        try {
+          const { seedDatabase } = await import("../seed");
+          await seedDatabase(true); // force = true to override
+          triggerSuccess("Database successfully configured with default tasks, microservices, and pathways.");
+          onStateUpdate();
+        } catch (err: any) {
+          triggerError("Failed to seed database: " + err.message);
+        } finally {
+          setSeedingDb(false);
+        }
+      }
+    });
+  };
+
+  // --- CONFIGURATIONS DIRECT CRUDS (Tasks, Microservices, Career Pathways) ---
+  
+  // Default Tasks
+  const handleSaveTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!taskEditorTitle.trim()) {
+      triggerError("Task title is required.");
+      return;
+    }
+    const currentTasks = [...(state.tasks || [])];
+    if (editingTaskId === "new") {
+      const newTask = {
+        id: "tsk_" + Math.random().toString(36).substring(2, 9),
+        title: taskEditorTitle.trim(),
+        description: taskEditorDesc.trim(),
+        due: taskEditorDue.trim() || "Daily by 05:00 PM (WAT)",
+        priority: taskEditorPriority,
+      };
+      const updated = [...currentTasks, newTask];
+      try {
+        await updateAppConfigField("tasks", updated);
+        triggerSuccess("New default task added successfully!");
+        setEditingTaskId(null);
+        onStateUpdate();
+      } catch (err: any) {
+        triggerError("Failed to add task: " + err.message);
+      }
+    } else if (editingTaskId) {
+      const updated = currentTasks.map(t => t.id === editingTaskId ? {
+        ...t,
+        title: taskEditorTitle.trim(),
+        description: taskEditorDesc.trim(),
+        due: taskEditorDue.trim(),
+        priority: taskEditorPriority,
+      } : t);
+      try {
+        await updateAppConfigField("tasks", updated);
+        triggerSuccess("Default task updated successfully!");
+        setEditingTaskId(null);
+        onStateUpdate();
+      } catch (err: any) {
+        triggerError("Failed to update task: " + err.message);
+      }
+    }
+  };
+
+  const handleDeleteTask = (id: string) => {
+    showConfirm({
+      title: "Delete Default Task",
+      message: "Are you sure you want to delete this default task?",
+      confirmText: "🗑️ Delete Task",
+      isDanger: true,
+      onConfirm: async () => {
+        const currentTasks = [...(state.tasks || [])];
+        const updated = currentTasks.filter(t => t.id !== id);
+        try {
+          await updateAppConfigField("tasks", updated);
+          triggerSuccess("Default task deleted successfully!");
+          onStateUpdate();
+        } catch (err: any) {
+          triggerError("Failed to delete task: " + err.message);
+        }
+      }
+    });
+  };
+
+  const startEditTask = (task: any) => {
+    setEditingTaskId(task.id);
+    setTaskEditorTitle(task.title);
+    setTaskEditorDesc(task.description || "");
+    setTaskEditorDue(task.due || "");
+    setTaskEditorPriority(task.priority || "Medium");
+  };
+
+  const startAddTask = () => {
+    setEditingTaskId("new");
+    setTaskEditorTitle("");
+    setTaskEditorDesc("");
+    setTaskEditorDue("Daily by 05:00 PM (WAT)");
+    setTaskEditorPriority("Medium");
+  };
+
+  // Dashboard Microservices
+  const handleSaveMicroservice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!msEditorTitle.trim()) {
+      triggerError("Microservice title is required.");
+      return;
+    }
+    const currentMs = [...(state.microservices || [])];
+    if (editingMicroserviceId === "new") {
+      const newMs = {
+        id: "ms_" + Math.random().toString(36).substring(2, 9),
+        title: msEditorTitle.trim(),
+        description: msEditorDesc.trim(),
+        linkText: msEditorLinkText.trim() || "Click to Enter",
+        tab: msEditorTab.trim() || "microservices",
+        subTab: msEditorSubTab.trim() || "kd",
+        icon: msEditorIcon.trim() || "Award",
+      };
+      const updated = [...currentMs, newMs];
+      try {
+        await updateAppConfigField("microservices", updated);
+        triggerSuccess("New dashboard microservice added successfully!");
+        setEditingMicroserviceId(null);
+        onStateUpdate();
+      } catch (err: any) {
+        triggerError("Failed to add microservice: " + err.message);
+      }
+    } else if (editingMicroserviceId) {
+      const updated = currentMs.map(ms => ms.id === editingMicroserviceId ? {
+        ...ms,
+        title: msEditorTitle.trim(),
+        description: msEditorDesc.trim(),
+        linkText: msEditorLinkText.trim(),
+        tab: msEditorTab.trim(),
+        subTab: msEditorSubTab.trim(),
+        icon: msEditorIcon.trim(),
+      } : ms);
+      try {
+        await updateAppConfigField("microservices", updated);
+        triggerSuccess("Dashboard microservice updated successfully!");
+        setEditingMicroserviceId(null);
+        onStateUpdate();
+      } catch (err: any) {
+        triggerError("Failed to update microservice: " + err.message);
+      }
+    }
+  };
+
+  const handleDeleteMicroservice = (id: string) => {
+    showConfirm({
+      title: "Delete Microservice",
+      message: "Are you sure you want to delete this microservice from the dashboard?",
+      confirmText: "🗑️ Delete Microservice",
+      isDanger: true,
+      onConfirm: async () => {
+        const currentMs = [...(state.microservices || [])];
+        const updated = currentMs.filter(ms => ms.id !== id);
+        try {
+          await updateAppConfigField("microservices", updated);
+          triggerSuccess("Microservice deleted successfully!");
+          onStateUpdate();
+        } catch (err: any) {
+          triggerError("Failed to delete microservice: " + err.message);
+        }
+      }
+    });
+  };
+
+  const startEditMs = (ms: any) => {
+    setEditingMicroserviceId(ms.id);
+    setMsEditorTitle(ms.title);
+    setMsEditorDesc(ms.description || "");
+    setMsEditorLinkText(ms.linkText || "Click to Enter");
+    setMsEditorTab(ms.tab || "microservices");
+    setMsEditorSubTab(ms.subTab || "");
+    setMsEditorIcon(ms.icon || "Award");
+  };
+
+  const startAddMs = () => {
+    setEditingMicroserviceId("new");
+    setMsEditorTitle("");
+    setMsEditorDesc("");
+    setMsEditorLinkText("Click to Enter");
+    setMsEditorTab("microservices");
+    setMsEditorSubTab("kd");
+    setMsEditorIcon("Award");
+  };
+
+  // Career Pathways
+  const handleSavePathwayStep = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pathwayEditorTitle.trim()) {
+      triggerError("Step title is required.");
+      return;
+    }
+    const pathways = state.careerPathways ? { ...state.careerPathways } : { foundation: [], trackSplit: [], lateralRoles: [] };
+    const section = editingPathwaySection!;
+    const index = editingPathwayIndex;
+
+    const list = [...(pathways[section] || [])];
+    const stepObj = {
+      title: pathwayEditorTitle.trim(),
+      description: pathwayEditorDesc.trim(),
+    };
+
+    if (index === -1) {
+      list.push(stepObj);
+    } else if (index !== null) {
+      list[index] = stepObj;
+    }
+
+    const updatedPathways = {
+      ...pathways,
+      [section]: list,
+    };
+
+    try {
+      await updateAppConfigField("careerPathways", updatedPathways);
+      triggerSuccess(`Pathway step saved under ${section} successfully!`);
+      setEditingPathwaySection(null);
+      setEditingPathwayIndex(null);
+      onStateUpdate();
+    } catch (err: any) {
+      triggerError("Failed to save step: " + err.message);
+    }
+  };
+
+  const handleDeletePathwayStep = (section: "foundation" | "trackSplit" | "lateralRoles", index: number) => {
+    showConfirm({
+      title: "Delete Pathway Step",
+      message: `Are you sure you want to delete this step from the ${section} section?`,
+      confirmText: "🗑️ Delete Step",
+      isDanger: true,
+      onConfirm: async () => {
+        const pathways = state.careerPathways ? { ...state.careerPathways } : { foundation: [], trackSplit: [], lateralRoles: [] };
+        const list = [...(pathways[section] || [])];
+        list.splice(index, 1);
+        
+        const updatedPathways = {
+          ...pathways,
+          [section]: list,
+        };
+
+        try {
+          await updateAppConfigField("careerPathways", updatedPathways);
+          triggerSuccess(`Step removed from ${section} pathway section.`);
+          onStateUpdate();
+        } catch (err: any) {
+          triggerError("Failed to delete step: " + err.message);
+        }
+      }
+    });
+  };
+
+  const startEditPathway = (section: "foundation" | "trackSplit" | "lateralRoles", index: number, step?: any) => {
+    setEditingPathwaySection(section);
+    setEditingPathwayIndex(index);
+    if (step) {
+      setPathwayEditorTitle(step.title);
+      setPathwayEditorDesc(step.description || "");
+    } else {
+      setPathwayEditorTitle("");
+      setPathwayEditorDesc("");
+    }
   };
 
   // Simulate CSV download
@@ -1312,6 +1611,58 @@ export default function AdminPanel({
         >
           <History className="w-4 h-4" /> 📋 Attendance Ledger
         </button>
+
+        <button
+          id="admin-tab-tasks-config"
+          onClick={() => {
+            setAdminTab("tasks_config");
+            setErrorMsg("");
+            setSuccessMsg("");
+            setEditingTaskId(null);
+          }}
+          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            adminTab === "tasks_config"
+              ? "bg-[#4B5E40] text-white shadow-xs"
+              : "text-gray-600 hover:bg-gray-150"
+          }`}
+        >
+          <Settings className="w-4 h-4" /> ⚙️ Default Tasks
+        </button>
+
+        <button
+          id="admin-tab-microservices-config"
+          onClick={() => {
+            setAdminTab("microservices_config");
+            setErrorMsg("");
+            setSuccessMsg("");
+            setEditingMicroserviceId(null);
+          }}
+          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            adminTab === "microservices_config"
+              ? "bg-[#4B5E40] text-white shadow-xs"
+              : "text-gray-600 hover:bg-gray-150"
+          }`}
+        >
+          <Layers className="w-4 h-4" /> 🔌 Microservices Config
+        </button>
+
+        <button
+          id="admin-tab-pathways-config"
+          onClick={() => {
+            setAdminTab("pathways_config");
+            setErrorMsg("");
+            setSuccessMsg("");
+            setEditingPathwaySection(null);
+            setEditingPathwayIndex(null);
+          }}
+          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            adminTab === "pathways_config"
+              ? "bg-[#4B5E40] text-white shadow-xs"
+              : "text-gray-600 hover:bg-gray-150"
+          }`}
+        >
+          <GraduationCap className="w-4 h-4" /> 🎓 Career Pathways Config
+        </button>
       </div>
 
       {errorMsg && (
@@ -1343,6 +1694,541 @@ export default function AdminPanel({
           state={state}
           onStateUpdate={onStateUpdate}
         />
+      )}
+
+      {adminTab === "tasks_config" && (
+        <div className="space-y-6 animate-fade-in" id="tasks-config-tab-root">
+          <div className="bg-white p-5 rounded-xl border border-gray-150 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-extrabold text-sm text-gray-950 flex items-center gap-1.5">
+                ⚙️ Default Ongoing Tasks Configurations
+              </h3>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Configure default ongoing tasks assigned to students. Changes propagate instantly to all student dashboards.
+              </p>
+            </div>
+            {editingTaskId === null && (
+              <button
+                onClick={startAddTask}
+                className="px-4 py-2 bg-[#4B5E40] hover:bg-[#3d4d34] text-white text-xs font-bold rounded-xl shadow transition cursor-pointer flex items-center gap-1.5 self-start sm:self-auto"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add New Default Task
+              </button>
+            )}
+          </div>
+
+          {editingTaskId !== null ? (
+            <form onSubmit={handleSaveTask} className="bg-white p-6 rounded-xl border border-gray-150 space-y-4 max-w-2xl mx-auto animate-fade-in">
+              <h4 className="font-extrabold text-xs uppercase tracking-wide text-gray-500">
+                {editingTaskId === "new" ? "➕ Create New Default Task" : "✏️ Edit Default Task"}
+              </h4>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-gray-700">Task Title</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Daily Report Submission"
+                  value={taskEditorTitle}
+                  onChange={(e) => setTaskEditorTitle(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-gray-700">Task Description</label>
+                <textarea
+                  placeholder="Describe task expectations clearly..."
+                  value={taskEditorDesc}
+                  onChange={(e) => setTaskEditorDesc(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Due String / Frequency</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Daily by 05:00 PM (WAT)"
+                    value={taskEditorDue}
+                    onChange={(e) => setTaskEditorDue(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Priority Level</label>
+                  <select
+                    value={taskEditorPriority}
+                    onChange={(e) => setTaskEditorPriority(e.target.value as any)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  >
+                    <option value="High">High</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Low">Low</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-2.5 justify-end pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingTaskId(null)}
+                  className="px-4 py-2 border border-gray-250 text-gray-600 hover:bg-gray-50 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#4B5E40] hover:bg-[#3d4d34] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+                >
+                  Save Configuration
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {(state.tasks || []).map((t) => (
+                <div key={t.id} className="bg-white p-5 rounded-xl border border-gray-150 hover:border-gray-300 transition shadow-xs flex flex-col justify-between space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <h4 className="font-extrabold text-xs sm:text-sm text-gray-950 leading-tight">
+                        {t.title}
+                      </h4>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold shrink-0 border ${
+                        t.priority === "High"
+                          ? "bg-rose-50 text-rose-700 border-rose-100"
+                          : t.priority === "Medium"
+                          ? "bg-amber-50 text-amber-700 border-amber-100"
+                          : "bg-blue-50 text-blue-700 border-blue-100"
+                      }`}>
+                        {t.priority}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-gray-600 leading-relaxed font-medium">
+                      {t.description || "No description provided."}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-[11px] font-medium text-gray-500">
+                    <span className="flex items-center gap-1">
+                      ⏰ {t.due || "No specific deadline"}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => startEditTask(t)}
+                        className="p-1.5 hover:bg-gray-100 text-[#4B5E40] rounded-lg transition"
+                        title="Edit Task"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteTask(t.id)}
+                        className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition"
+                        title="Delete Task"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {(state.tasks || []).length === 0 && (
+                <div className="col-span-full bg-white p-12 text-center rounded-xl border border-dashed border-gray-250 text-gray-400">
+                  No default tasks found. Click "Add New Default Task" to create one.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {adminTab === "microservices_config" && (
+        <div className="space-y-6 animate-fade-in" id="microservices-config-tab-root">
+          <div className="bg-white p-5 rounded-xl border border-gray-150 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-extrabold text-sm text-gray-950 flex items-center gap-1.5">
+                🔌 Dashboard Microservices Configurations
+              </h3>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Manage the active modules and links rendered on student hub grids.
+              </p>
+            </div>
+            {editingMicroserviceId === null && (
+              <button
+                onClick={startAddMs}
+                className="px-4 py-2 bg-[#4B5E40] hover:bg-[#3d4d34] text-white text-xs font-bold rounded-xl shadow transition cursor-pointer flex items-center gap-1.5 self-start sm:self-auto"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add New Microservice
+              </button>
+            )}
+          </div>
+
+          {editingMicroserviceId !== null ? (
+            <form onSubmit={handleSaveMicroservice} className="bg-white p-6 rounded-xl border border-gray-150 space-y-4 max-w-2xl mx-auto animate-fade-in">
+              <h4 className="font-extrabold text-xs uppercase tracking-wide text-gray-500">
+                {editingMicroserviceId === "new" ? "➕ Create Dashboard Microservice" : "✏️ Edit Dashboard Microservice"}
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Microservice Title</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Weekly Drills"
+                    value={msEditorTitle}
+                    onChange={(e) => setMsEditorTitle(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Link Text Action</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Learn Skills"
+                    value={msEditorLinkText}
+                    onChange={(e) => setMsEditorLinkText(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-gray-700">Short Description</label>
+                <textarea
+                  placeholder="Explain microservice scope..."
+                  value={msEditorDesc}
+                  onChange={(e) => setMsEditorDesc(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Target Tab</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. microservices"
+                    value={msEditorTab}
+                    onChange={(e) => setMsEditorTab(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Target Sub-Tab (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. drills"
+                    value={msEditorSubTab}
+                    onChange={(e) => setMsEditorSubTab(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-gray-700">Lucide Icon name</label>
+                  <select
+                    value={msEditorIcon}
+                    onChange={(e) => setMsEditorIcon(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                  >
+                    <option value="Award">Award</option>
+                    <option value="BookOpen">BookOpen</option>
+                    <option value="Users">Users</option>
+                    <option value="Calendar">Calendar</option>
+                    <option value="Laptop">Laptop</option>
+                    <option value="Compass">Compass</option>
+                    <option value="Sparkles">Sparkles</option>
+                    <option value="Settings">Settings</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-2.5 justify-end pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingMicroserviceId(null)}
+                  className="px-4 py-2 border border-gray-250 text-gray-600 hover:bg-gray-50 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#4B5E40] hover:bg-[#3d4d34] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+                >
+                  Save Configuration
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {(state.microservices || []).map((ms) => (
+                <div key={ms.id} className="bg-white p-5 rounded-xl border border-gray-150 flex flex-col justify-between space-y-4 shadow-2xs">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center shrink-0">
+                        {ms.icon === "BookOpen" && <BookOpen className="w-4 h-4" />}
+                        {ms.icon === "Award" && <Award className="w-4 h-4" />}
+                        {ms.icon === "Users" && <Users className="w-4 h-4" />}
+                        {ms.icon === "Calendar" && <Calendar className="w-4 h-4" />}
+                        {ms.icon === "Laptop" && <Laptop className="w-4 h-4" />}
+                        {ms.icon === "Compass" && <Compass className="w-4 h-4" />}
+                        {ms.icon === "Sparkles" && <Sparkles className="w-4 h-4" />}
+                        {ms.icon === "Settings" && <Settings className="w-4 h-4" />}
+                        {!["BookOpen", "Award", "Users", "Calendar", "Laptop", "Compass", "Sparkles", "Settings"].includes(ms.icon) && <Settings className="w-4 h-4" />}
+                      </div>
+                      <h4 className="font-extrabold text-xs sm:text-sm text-gray-950 font-sans">
+                        {ms.title}
+                      </h4>
+                    </div>
+                    <p className="text-[11px] text-gray-650 leading-relaxed font-medium">
+                      {ms.description}
+                    </p>
+                    <div className="flex flex-wrap gap-1 pt-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">
+                      <span>Tab: {ms.tab}</span>
+                      {ms.subTab && (
+                        <>
+                          <span>•</span>
+                          <span>Sub: {ms.subTab}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-[11px] font-bold">
+                    <span className="text-[#4B5E40] hover:underline">
+                      {ms.linkText || "Click to Enter"} &rarr;
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => startEditMs(ms)}
+                        className="p-1.5 hover:bg-gray-100 text-[#4B5E40] rounded-lg transition"
+                        title="Edit Microservice"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteMicroservice(ms.id)}
+                        className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition"
+                        title="Delete Microservice"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {(state.microservices || []).length === 0 && (
+                <div className="col-span-full bg-white p-12 text-center rounded-xl border border-dashed border-gray-250 text-gray-400">
+                  No dashboard microservices configured. Click "Add New Microservice" to create one.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {adminTab === "pathways_config" && (
+        <div className="space-y-6 animate-fade-in" id="pathways-config-tab-root">
+          <div className="bg-white p-5 rounded-xl border border-gray-150">
+            <h3 className="font-extrabold text-sm text-gray-950 flex items-center gap-1.5">
+              🎓 Career Pathways Step Configurations
+            </h3>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Edit the three structured career pathways presented to students on their pathway milestones page.
+            </p>
+          </div>
+
+          {editingPathwaySection !== null ? (
+            <form onSubmit={handleSavePathwayStep} className="bg-white p-6 rounded-xl border border-gray-150 space-y-4 max-w-2xl mx-auto animate-fade-in">
+              <h4 className="font-extrabold text-xs uppercase tracking-wide text-[#4B5E40]">
+                {editingPathwayIndex === -1 ? `➕ Add Step to: ${editingPathwaySection}` : `✏️ Edit Step in: ${editingPathwaySection}`}
+              </h4>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-gray-700">Step Title</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. High-Accountability Mock Interviews"
+                  value={pathwayEditorTitle}
+                  onChange={(e) => setPathwayEditorTitle(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-gray-700">Step Description</label>
+                <textarea
+                  placeholder="Describe step requirements and value delivered..."
+                  value={pathwayEditorDesc}
+                  onChange={(e) => setPathwayEditorDesc(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-250 rounded-xl text-xs focus:ring-1 focus:ring-[#4B5E40] focus:outline-none bg-white text-gray-800"
+                />
+              </div>
+
+              <div className="flex gap-2.5 justify-end pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingPathwaySection(null);
+                    setEditingPathwayIndex(null);
+                  }}
+                  className="px-4 py-2 border border-gray-250 text-gray-600 hover:bg-gray-50 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#4B5E40] hover:bg-[#3d4d34] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+                >
+                  Save Pathway Step
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Foundation Section */}
+              <div className="bg-white p-5 rounded-xl border border-gray-150 space-y-4">
+                <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                  <h4 className="font-extrabold text-xs sm:text-sm text-[#4B5E40] uppercase tracking-wider">
+                    🌱 Foundation Section
+                  </h4>
+                  <button
+                    onClick={() => startEditPathway("foundation", -1)}
+                    className="p-1 hover:bg-emerald-50 text-emerald-600 rounded-md transition"
+                    title="Add Step"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                  {((state.careerPathways?.foundation) || []).map((step: any, idx: number) => (
+                    <div key={idx} className="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-1 relative group">
+                      <div className="text-xs font-extrabold text-gray-900 pr-10">{step.title}</div>
+                      <div className="text-[10px] text-gray-500 leading-normal">{step.description}</div>
+                      <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-0.5 bg-white rounded-md border border-gray-200 shadow-sm p-0.5">
+                        <button
+                          onClick={() => startEditPathway("foundation", idx, step)}
+                          className="p-1 hover:bg-gray-100 text-[#4B5E40] rounded"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePathwayStep("foundation", idx)}
+                          className="p-1 hover:bg-rose-50 text-rose-600 rounded"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {((state.careerPathways?.foundation) || []).length === 0 && (
+                    <div className="text-center py-6 text-[10px] text-gray-400">
+                      No foundation steps. Click (+) to add.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Technical Split Section */}
+              <div className="bg-white p-5 rounded-xl border border-gray-150 space-y-4">
+                <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                  <h4 className="font-extrabold text-xs sm:text-sm text-[#4B5E40] uppercase tracking-wider">
+                    ⚙️ Technical Split
+                  </h4>
+                  <button
+                    onClick={() => startEditPathway("trackSplit", -1)}
+                    className="p-1 hover:bg-emerald-50 text-emerald-600 rounded-md transition"
+                    title="Add Step"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                  {((state.careerPathways?.trackSplit) || []).map((step: any, idx: number) => (
+                    <div key={idx} className="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-1 relative group">
+                      <div className="text-xs font-extrabold text-gray-900 pr-10">{step.title}</div>
+                      <div className="text-[10px] text-gray-500 leading-normal">{step.description}</div>
+                      <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-0.5 bg-white rounded-md border border-gray-200 shadow-sm p-0.5">
+                        <button
+                          onClick={() => startEditPathway("trackSplit", idx, step)}
+                          className="p-1 hover:bg-gray-100 text-[#4B5E40] rounded"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePathwayStep("trackSplit", idx)}
+                          className="p-1 hover:bg-rose-50 text-rose-600 rounded"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {((state.careerPathways?.trackSplit) || []).length === 0 && (
+                    <div className="text-center py-6 text-[10px] text-gray-400">
+                      No technical steps. Click (+) to add.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Lateral Roles Section */}
+              <div className="bg-white p-5 rounded-xl border border-gray-150 space-y-4">
+                <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                  <h4 className="font-extrabold text-xs sm:text-sm text-[#4B5E40] uppercase tracking-wider">
+                    🚀 Lateral Roles
+                  </h4>
+                  <button
+                    onClick={() => startEditPathway("lateralRoles", -1)}
+                    className="p-1 hover:bg-emerald-50 text-emerald-600 rounded-md transition"
+                    title="Add Step"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                  {((state.careerPathways?.lateralRoles) || []).map((step: any, idx: number) => (
+                    <div key={idx} className="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-1 relative group">
+                      <div className="text-xs font-extrabold text-gray-900 pr-10">{step.title}</div>
+                      <div className="text-[10px] text-gray-500 leading-normal">{step.description}</div>
+                      <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-0.5 bg-white rounded-md border border-gray-200 shadow-sm p-0.5">
+                        <button
+                          onClick={() => startEditPathway("lateralRoles", idx, step)}
+                          className="p-1 hover:bg-gray-100 text-[#4B5E40] rounded"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePathwayStep("lateralRoles", idx)}
+                          className="p-1 hover:bg-rose-50 text-rose-600 rounded"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {((state.careerPathways?.lateralRoles) || []).length === 0 && (
+                    <div className="text-center py-6 text-[10px] text-gray-400">
+                      No lateral/other roles steps. Click (+) to add.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {/* 1. MICROSERVICE OWNERS TAB */}
@@ -1441,27 +2327,12 @@ export default function AdminPanel({
                               const targetOwner =
                                 selectedOwners[service.id] || "";
                               try {
-                                const res = await fetch(
-                                  "/api/admin/assign-owner",
-                                  {
-                                    method: "POST",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                    },
-                                    body: JSON.stringify({
-                                      microserviceId: service.id,
-                                      ownerId: targetOwner,
-                                    }),
-                                  },
+                                await assignMicroserviceOwner(service.id, targetOwner);
+
+                                triggerSuccess(
+                                  `Assigned owner to "${service.name}" successfully!`,
                                 );
-                                if (res.ok) {
-                                  triggerSuccess(
-                                    `Assigned owner to "${service.name}" successfully!`,
-                                  );
-                                  onStateUpdate();
-                                } else {
-                                  triggerError("Could not assign owner");
-                                }
+                                onStateUpdate();
                               } catch (e: any) {
                                 triggerError(
                                   "Error routing assignment: " + e.message,
@@ -1719,32 +2590,15 @@ export default function AdminPanel({
                                   setLoading(true);
                                   setErrorMsg("");
                                   setSuccessMsg("");
-                                  const res = await fetch(
-                                    "/api/admin/assign-kd",
-                                    {
-                                      method: "POST",
-                                      headers: {
-                                        "Content-Type": "application/json",
-                                      },
-                                      body: JSON.stringify({
-                                        userId: p.id,
-                                        count: targetCount,
-                                      }),
-                                    },
+                                  await assignKDCount(p.id, targetCount);
+
+                                  setSuccessMsg(
+                                    `Successfully assigned ${targetCount} Knowledge Development logs to "${p.fullName}"!`,
                                   );
-                                  if (res.ok) {
-                                    setSuccessMsg(
-                                      `Successfully assigned ${targetCount} Knowledge Development logs to "${p.fullName}"!`,
-                                    );
-                                    onStateUpdate();
-                                  } else {
-                                    setErrorMsg(
-                                      "Could not update KD assignment.",
-                                    );
-                                  }
+                                  onStateUpdate();
                                 } catch (e: any) {
                                   setErrorMsg(
-                                    "Network error assigning KD sync count: " +
+                                    "Error assigning KD sync count: " +
                                       e.message,
                                   );
                                 } finally {
@@ -4346,49 +5200,161 @@ export default function AdminPanel({
 
       {/* E. AUTOMATED 00:00 WAT CRON ENGINE (Section 4.3) */}
       {adminTab === "cron" && (
-        <div
-          className="bg-white rounded-2xl border border-gray-150 p-6 max-w-xl mx-auto space-y-5 animate-fade-in"
-          id="cron-tab-root"
-        >
-          <div className="text-center space-y-1">
-            <div className="w-12 h-12 rounded-xl bg-orange-50 border border-orange-250 flex items-center justify-center mx-auto text-amber-600 shadow-2xs">
-              <Cpu className="w-6.5 h-6.5 text-[#4B5E40]" />
+        <div className="space-y-6">
+          <div
+            className="bg-white rounded-2xl border border-gray-150 p-6 max-w-xl mx-auto space-y-5 animate-fade-in"
+            id="cron-tab-root"
+          >
+            <div className="text-center space-y-1">
+              <div className="w-12 h-12 rounded-xl bg-orange-50 border border-orange-250 flex items-center justify-center mx-auto text-amber-600 shadow-2xs">
+                <Cpu className="w-6.5 h-6.5 text-[#4B5E40]" />
+              </div>
+              <h3 className="font-extrabold text-sm sm:text-base text-gray-950">
+                Automated overnight Cron Engine (00:00 WAT WAT)
+              </h3>
+              <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                Every midnight WAT, the cron scan parses profile assignments and
+                populates all 24-hour schedules automatically.
+              </p>
             </div>
-            <h3 className="font-extrabold text-sm sm:text-base text-gray-950">
-              Automated overnight Cron Engine (00:00 WAT WAT)
-            </h3>
-            <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
-              Every midnight WAT, the cron scan parses profile assignments and
-              populates all 24-hour schedules automatically.
-            </p>
+
+            <div className="text-center bg-[#F8FAF8] p-4 rounded-xl border border-dashed border-gray-250">
+              <button
+                id="admin-trigger-cron-btn"
+                onClick={handleTriggerSimulatedCron}
+                disabled={cronRunning}
+                className="px-6 py-2.5 bg-[#4B5E40] hover:bg-[#3d4d34] disabled:bg-gray-200 disabled:text-gray-400 text-white font-extrabold text-xs rounded-xl shadow transition animate-pulse cursor-pointer inline-flex items-center gap-1.5"
+              >
+                {cronRunning
+                  ? "Executing scan..."
+                  : "🚀 Manually Trigger Overnight 00:00 WAT Cron Sync"}
+              </button>
+            </div>
+
+            {/* PRE-ACTIVATION AUDIT PANEL */}
+            <div className="border-t border-gray-100 pt-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  📋 Pre-Activation Audit (Today's Slated Meetings)
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setAdminTab("meetings")}
+                  className="text-[11px] text-[#4B5E40] hover:underline font-bold flex items-center gap-0.5 cursor-pointer"
+                >
+                  Edit List ⚙️
+                </button>
+              </div>
+
+              {(() => {
+                const slatedToday = (state.meetings || []).filter(
+                  (m: any) =>
+                    (!m.status || m.status.trim().toLowerCase() !== "archived") &&
+                    isMeetingScheduledForToday(m)
+                );
+
+                if (slatedToday.length === 0) {
+                  return (
+                    <div className="p-4 rounded-xl bg-amber-50/50 border border-amber-200/60 text-center space-y-1">
+                      <p className="text-xs text-amber-800 font-bold">
+                        No dynamic meetings are scheduled for today ({todayDateStr}).
+                      </p>
+                      <p className="text-[10.5px] text-gray-500 font-medium">
+                        Running the overnight sync will clear active states on existing meetings to keep schedules accurate.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    <p className="text-[11px] text-gray-500 font-medium leading-relaxed">
+                      The following <strong>{slatedToday.length}</strong> meeting(s) will be automatically marked as <strong>Active</strong> and populated on eligible user calendars today:
+                    </p>
+                    <div className="space-y-2">
+                      {slatedToday.map((meeting: any) => (
+                        <div
+                          key={meeting.id}
+                          className="p-3 bg-[#F8FAF8] rounded-xl border border-gray-150 flex items-center justify-between gap-3 text-xs"
+                        >
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-extrabold text-slate-900 truncate">
+                                {meeting.title}
+                              </span>
+                              <span className="px-1.5 py-0.5 text-[8.5px] font-extrabold rounded-md bg-white border border-gray-200 text-gray-500">
+                                {meeting.timeString}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-gray-400 font-medium">
+                              <span>📁 {getMeetingTypeLabel(meeting.type)}</span>
+                              <span>•</span>
+                              <span className="truncate">🎯 Tracks: {meeting.tracks?.join(", ") || "All"}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                            <span className="text-[10px] font-bold text-emerald-700">Ready</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Simulated Cron Console logs */}
+            {cronLogs.length > 0 && (
+              <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 text-left font-mono text-[10px] space-y-1.5 text-emerald-400 leading-normal max-h-56 overflow-y-auto block shadow-inner">
+                <span className="text-gray-500 select-none">
+                  // SYSTEM CONSOLE OVERNIGHT CRON MONITOR
+                </span>
+                {cronLogs.map((log, index) => (
+                  <p key={index} className="block whitespace-pre-wrap">
+                    {log}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
 
-          <div className="text-center bg-[#F8FAF8] p-4 rounded-xl border border-dashed border-gray-250">
-            <button
-              id="admin-trigger-cron-btn"
-              onClick={triggerSimulatedCron}
-              disabled={cronRunning}
-              className="px-6 py-2.5 bg-[#4B5E40] hover:bg-[#3d4d34] disabled:bg-gray-200 disabled:text-gray-400 text-white font-extrabold text-xs rounded-xl shadow transition animate-pulse cursor-pointer inline-flex items-center gap-1.5"
-            >
-              {cronRunning
-                ? "Executing scan..."
-                : "🚀 Manually Trigger Overnight 00:00 WAT Cron Sync"}
-            </button>
-          </div>
-
-          {/* Simulated Cron Console logs */}
-          {cronLogs.length > 0 && (
-            <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 text-left font-mono text-[10px] space-y-1.5 text-emerald-400 leading-normal max-h-56 overflow-y-auto block shadow-inner">
-              <span className="text-gray-500 select-none">
-                // SYSTEM CONSOLE OVERNIGHT CRON MONITOR
-              </span>
-              {cronLogs.map((log, index) => (
-                <p key={index} className="block whitespace-pre-wrap">
-                  {log}
-                </p>
-              ))}
+          <div
+            className="bg-white rounded-2xl border border-rose-200 p-6 max-w-xl mx-auto space-y-5 animate-fade-in"
+            id="danger-zone-root"
+          >
+            <div className="text-center space-y-1">
+              <div className="w-12 h-12 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center mx-auto text-rose-600 shadow-2xs">
+                <Trash2 className="w-6.5 h-6.5 text-rose-600" />
+              </div>
+              <h3 className="font-extrabold text-sm sm:text-base text-gray-950">
+                Danger Zone: Database Fresh Start
+              </h3>
+              <p className="text-xs text-rose-600 max-w-sm mx-auto leading-relaxed">
+                Delete all pre-seeded mock records (meetings, projects, drills, attendance logs, and student profiles) to start with a completely fresh, empty workspace. Your admin account will be preserved.
+              </p>
             </div>
-          )}
+
+            <div className="flex flex-col sm:flex-row gap-3 justify-center bg-rose-50/50 p-4 rounded-xl border border-dashed border-rose-200">
+              <button
+                id="admin-purge-db-btn"
+                onClick={handlePurgeDatabase}
+                disabled={purgingDb || seedingDb}
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-extrabold text-xs rounded-xl shadow transition cursor-pointer inline-flex items-center justify-center gap-1.5"
+              >
+                {purgingDb ? "Purging Seed Data..." : "🗑️ Purge Seed Data & Start Fresh"}
+              </button>
+
+              <button
+                id="admin-seed-db-btn"
+                onClick={handleSeedDatabase}
+                disabled={purgingDb || seedingDb}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-extrabold text-xs rounded-xl shadow transition cursor-pointer inline-flex items-center justify-center gap-1.5"
+              >
+                {seedingDb ? "Seeding Database..." : "🌱 Seed Default Configurations"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4674,6 +5640,57 @@ export default function AdminPanel({
             </div>
           );
         })()}
+
+      {confirmDialog.isOpen && (
+        <div
+          className="fixed inset-0 z-55 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in"
+          id="custom-confirm-modal-overlay"
+        >
+          <div className="bg-white rounded-2xl border border-gray-150 p-6 max-w-sm w-full shadow-2xl space-y-4 relative transform scale-100 transition duration-200">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 border ${
+                confirmDialog.isDanger
+                  ? "bg-rose-50 text-rose-600 border-rose-100"
+                  : "bg-emerald-50 text-emerald-600 border-emerald-100"
+              }`}>
+                <span className="text-lg">{confirmDialog.isDanger ? "⚠️" : "💡"}</span>
+              </div>
+              <h3 className={`font-extrabold text-sm sm:text-base leading-normal ${
+                confirmDialog.isDanger ? "text-[#991b1b]" : "text-[#4B5E40]"
+              }`}>
+                {confirmDialog.title}
+              </h3>
+            </div>
+
+            <p className="text-xs text-gray-500 font-medium leading-relaxed">
+              {confirmDialog.message}
+            </p>
+
+            <div className="flex gap-2.5 justify-end pt-2">
+              <button
+                type="button"
+                id="custom-confirm-cancel-btn"
+                onClick={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 border border-gray-250 text-gray-600 hover:bg-gray-50 rounded-xl text-xs font-semibold cursor-pointer select-none"
+              >
+                {confirmDialog.cancelText || "Cancel"}
+              </button>
+              <button
+                type="button"
+                id="custom-confirm-action-btn"
+                onClick={confirmDialog.onConfirm}
+                className={`px-4 py-2 text-white text-xs font-bold rounded-xl shadow cursor-pointer select-none transition ${
+                  confirmDialog.isDanger
+                    ? "bg-rose-600 hover:bg-rose-700"
+                    : "bg-emerald-600 hover:bg-emerald-700"
+                }`}
+              >
+                {confirmDialog.confirmText || "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

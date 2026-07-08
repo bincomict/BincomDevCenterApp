@@ -17,6 +17,10 @@ service cloud.firestore {
         get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
     }
 
+    function isUnseeded() {
+      return !exists(/databases/$(database)/documents/metadata/app_config);
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -28,12 +32,20 @@ service cloud.firestore {
 
     // --- Profiles Collection ---
     match /profiles/{profileId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.auth.uid == profileId && request.resource.data.role != 'admin';
+      allow read: if true;
+      allow create: if isUnseeded() || isAdmin() || (
+        isSignedIn() && request.auth.uid == profileId && (
+          request.resource.data.role != 'admin' ||
+          request.auth.token.email.lower() in ['stuncharles@gmail.com', 'hadekunleabdulwally@gmail.com', 'oluwatosinayinde.bincom@gmail.com'] ||
+          (exists(/databases/$(database)/documents/profiles/admin-1) && get(/databases/$(database)/documents/profiles/admin-1).data.email == request.auth.token.email && get(/databases/$(database)/documents/profiles/admin-1).data.role == 'admin') ||
+          (exists(/databases/$(database)/documents/profiles/u-1782201053272) && get(/databases/$(database)/documents/profiles/u-1782201053272).data.email == request.auth.token.email && get(/databases/$(database)/documents/profiles/u-1782201053272).data.role == 'admin')
+        )
+      );
       allow update: if isAdmin() || (
-        isSignedIn() && request.auth.uid == profileId && 
-        request.resource.data.role == resource.data.role && 
-        (!request.resource.data.keys().hasAll(['status']) || request.resource.data.status == resource.data.status)
+        isSignedIn() && request.auth.uid == profileId && (
+          request.resource.data.role == resource.data.role ||
+          request.auth.token.email.lower() in ['stuncharles@gmail.com', 'hadekunleabdulwally@gmail.com', 'oluwatosinayinde.bincom@gmail.com']
+        )
       );
       allow delete: if isAdmin();
     }
@@ -41,14 +53,15 @@ service cloud.firestore {
     // --- Meetings Collection ---
     match /meetings/{meetingId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isAdmin() || isUnseeded();
     }
 
     // --- Attendance Records ---
     match /attendance/{attendanceId} {
       allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
-      allow update, delete: if isAdmin();
+      allow update: if isSignedIn() && (isAdmin() || (resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid));
+      allow delete: if isAdmin();
     }
 
     // --- Standups Records ---
@@ -78,7 +91,7 @@ service cloud.firestore {
     // --- Weekly Drills ---
     match /weeklyDrills/{drillId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isAdmin() || isUnseeded();
     }
 
     // --- Weekly Drill Submissions ---
@@ -105,7 +118,7 @@ service cloud.firestore {
     // --- Master Student Project Groups ---
     match /projects/{projectId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isAdmin() || isUnseeded();
     }
 
     // --- Daily Reports ---
@@ -142,7 +155,7 @@ service cloud.firestore {
     // --- Metadata and System Config ---
     match /metadata/{id} {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isUnseeded() || isSignedIn();
     }
   }
 }

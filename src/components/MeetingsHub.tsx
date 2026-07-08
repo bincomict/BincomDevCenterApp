@@ -550,12 +550,23 @@ export default function MeetingsHub({
       jitsiUrl: m.jitsiUrl,
     }));
 
-  const baseUserProjects = (profile.status === "admin") 
-    ? [ { id: "proj_1", name: "Bincom Dev Master Tracker", members: [profile.username], meetings: [{ id: "m_p1", title: "Dev Master Progress Sync", time: "02:00 PM WAT", jitsiUrl: "https://meet.jit.si/BincomDevMasterSync" }] },
-        { id: "proj_2", name: "eMigr8 Visa Pathway Portal", members: [profile.username], meetings: [{ id: "m_p2", title: "eMigr8 Architecture Refinement", time: "03:00 PM WAT", jitsiUrl: "https://meet.jit.si/BincomEMigr8Refinement" }] } ]
-    : []; 
+  // Fetch real, live projects from state.projects instead of hardcoded ones.
+  const liveUserProjects = (state?.projects || []).filter((proj: any) => {
+    // Hide archived or hold projects
+    if (proj.status === "Hold" || proj.status === "Archived") {
+      return false;
+    }
+    // Admins see all active projects to monitor them
+    if (profile.status === "admin" || profile.role === "admin") {
+      return true;
+    }
+    // Standard users see projects they are members of
+    return proj.members?.some(
+      (m: string) => m.toLowerCase() === profile.username.toLowerCase()
+    );
+  });
 
-  const rawUserProjects = [...baseUserProjects];
+  const rawUserProjects = [...liveUserProjects];
   if (dynamicProjectMeetings.length > 0) {
     rawUserProjects.push({
       id: "dynamic_proj",

@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Profile } from "../types";
+import { updateProfile } from "../firebaseService";
 
 interface OnboardingFormProps {
   profile: Profile;
@@ -13,6 +14,10 @@ const mapTrackToBackendTrack = (optionValue: string): string => {
 };
 
 export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToAssessment }: OnboardingFormProps) {
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, []);
+
   const [fullName, setFullName] = useState("");
   const [education, setEducation] = useState("");
   const [occupation, setOccupation] = useState("");
@@ -24,79 +29,80 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false);
+
+  const triggerError = (msg: string) => {
+    setError(msg);
+    setLoading(false);
+    setTimeout(() => {
+      const errorEl = document.getElementById("onboard-error-log");
+      if (errorEl) {
+        errorEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else {
+        document.getElementById("onboarding-form-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }, 50);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAttemptedSubmit(true);
     if (loading) return;
     setLoading(true);
     setError("");
     setSuccess("");
 
     if (!fullName.trim()) {
-      setError("Please fill in your Full Name.");
-      setLoading(false);
+      triggerError("Please fill in your Full Name.");
       return;
     }
     if (!education) {
-      setError("Please select your highest level of education.");
-      setLoading(false);
+      triggerError("Please select your highest level of education.");
       return;
     }
     if (!occupation) {
-      setError("Please select your current occupation & role.");
-      setLoading(false);
+      triggerError("Please select your current occupation & role.");
       return;
     }
     if (!experience) {
-      setError("Please select your years of experience in tech.");
-      setLoading(false);
+      triggerError("Please select your years of experience in tech.");
       return;
     }
     if (!track) {
-      setError("Please select your desired knowledge track.");
-      setLoading(false);
+      triggerError("Please select your desired knowledge track.");
       return;
     }
     if (!learningLevel) {
-      setError("Please select your learning level.");
-      setLoading(false);
+      triggerError("Please select your learning level.");
       return;
     }
     if (!prevCourse) {
-      setError("Please declare whether you completed a previous course.");
-      setLoading(false);
+      triggerError("Please declare whether you completed a previous course.");
       return;
     }
 
     const mappedBackendTrack = mapTrackToBackendTrack(track);
 
     try {
-      const res = await fetch("/api/profile/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          fullName: fullName,
-          education: education,
-          occupation: occupation,
-          techExperience: experience,
-          track: mappedBackendTrack,
-          learningLevel: learningLevel,
-          previousCourseCompleted: prevCourse === "Yes"
-        })
+      const updatedProfile = await updateProfile(profile.id, {
+        fullName: fullName,
+        education: education,
+        occupation: occupation,
+        techExperience: experience as any,
+        track: mappedBackendTrack,
+        learningLevel: learningLevel as any,
+        previousCourseCompleted: prevCourse === "Yes",
+        status: "assessment_failed" as any
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to submit onboarding credentials");
 
       setSuccess("Onboarding parameters successfully matched!");
       
       setTimeout(() => {
-        onUpdateSuccess(data.profile);
+        onUpdateSuccess(updatedProfile);
       }, 150);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "An error occurred while saving your onboarding details.");
+      triggerError(err.message || "An error occurred while saving your onboarding details.");
     } finally {
       setLoading(false);
     }
@@ -179,7 +185,7 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
 
             <div>
               <label className="block text-[11px] font-bold text-gray-700 mb-1.5" htmlFor="full-name">
-                Full Name
+                Full Name <span className="text-rose-500 font-bold ml-0.5">*</span>
               </label>
               <input
                 id="full-name"
@@ -188,19 +194,27 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 placeholder="Enter your full name"
-                className="w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border border-transparent focus:outline-none focus:bg-white focus:border-[#4B5E40] text-gray-800 font-medium transition"
+                className={`w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border focus:outline-none focus:bg-white text-gray-800 font-medium transition ${
+                  attemptedSubmit && !fullName.trim()
+                    ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-50/20"
+                    : "border-transparent focus:border-[#4B5E40]"
+                }`}
               />
             </div>
 
             <div>
               <label className="block text-[11px] font-bold text-gray-700 mb-1.5" htmlFor="education-level">
-                Highest Level of Education
+                Highest Level of Education <span className="text-rose-500 font-bold ml-0.5">*</span>
               </label>
               <select
                 id="education-level"
                 value={education}
                 onChange={(e) => setEducation(e.target.value)}
-                className="w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border border-transparent focus:outline-none focus:bg-white focus:border-[#4B5E40] text-gray-700 font-medium transition cursor-pointer"
+                className={`w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border focus:outline-none focus:bg-white text-gray-700 font-medium transition cursor-pointer ${
+                  attemptedSubmit && !education
+                    ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-50/20"
+                    : "border-transparent focus:border-[#4B5E40]"
+                }`}
               >
                 <option value="">Select education level</option>
                 <option value="High School">High School</option>
@@ -213,13 +227,17 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
 
             <div>
               <label className="block text-[11px] font-bold text-gray-700 mb-1.5" htmlFor="occupation-select">
-                Current Occupation & Role
+                Current Occupation & Role <span className="text-rose-500 font-bold ml-0.5">*</span>
               </label>
               <select
                 id="occupation-select"
                 value={occupation}
                 onChange={(e) => setOccupation(e.target.value)}
-                className="w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border border-transparent focus:outline-none focus:bg-white focus:border-[#4B5E40] text-gray-700 font-medium transition cursor-pointer"
+                className={`w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border focus:outline-none focus:bg-white text-gray-700 font-medium transition cursor-pointer ${
+                  attemptedSubmit && !occupation
+                    ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-50/20"
+                    : "border-transparent focus:border-[#4B5E40]"
+                }`}
               >
                 <option value="">Select occupation</option>
                 <option value="Student">Student</option>
@@ -232,13 +250,17 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
 
             <div>
               <label className="block text-[11px] font-bold text-gray-700 mb-1.5" htmlFor="experience-select">
-                Years of Experience in Tech
+                Years of Experience in Tech <span className="text-rose-500 font-bold ml-0.5">*</span>
               </label>
               <select
                 id="experience-select"
                 value={experience}
                 onChange={(e) => setExperience(e.target.value)}
-                className="w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border border-transparent focus:outline-none focus:bg-white focus:border-[#4B5E40] text-gray-700 font-medium transition cursor-pointer"
+                className={`w-full px-3 py-2 text-xs bg-[#EAECE6]/40 rounded border focus:outline-none focus:bg-white text-gray-700 font-medium transition cursor-pointer ${
+                  attemptedSubmit && !experience
+                    ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-50/20"
+                    : "border-transparent focus:border-[#4B5E40]"
+                }`}
               >
                 <option value="">Select experience</option>
                 <option value="No experience">No experience</option>
@@ -259,9 +281,16 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
 
             <div>
               <span className="block text-[11px] font-bold text-gray-500 mb-2">
-                Select your desired knowledge track
+                Select your desired knowledge track <span className="text-rose-500 font-bold ml-0.5">*</span>
               </span>
-              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-2" id="track-radio-group">
+              <div 
+                className={`space-y-2.5 max-h-56 overflow-y-auto pr-2 p-2 rounded transition ${
+                  attemptedSubmit && !track
+                    ? "border-2 border-rose-500 ring-2 ring-rose-500/10 bg-rose-50/10"
+                    : "border border-transparent"
+                }`}
+                id="track-radio-group"
+              >
                 {TRACKS_OPTIONS.map((tOpt) => (
                   <label key={tOpt} className="flex items-center gap-2.5 text-xs text-gray-750 font-medium cursor-pointer py-0.5 select-none hover:text-gray-900 transition">
                     <input
@@ -289,9 +318,16 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
 
             <div>
               <span className="block text-[11px] font-bold text-gray-500 mb-2">
-                Select your current level
+                Select your current level <span className="text-rose-500 font-bold ml-0.5">*</span>
               </span>
-              <div className="space-y-2.5 max-h-64 overflow-y-auto pr-2" id="level-radio-group">
+              <div 
+                className={`space-y-2.5 max-h-64 overflow-y-auto pr-2 p-2 rounded transition ${
+                  attemptedSubmit && !learningLevel
+                    ? "border-2 border-rose-500 ring-2 ring-rose-500/10 bg-rose-50/10"
+                    : "border border-transparent"
+                }`}
+                id="level-radio-group"
+              >
                 {LEVELS_OPTIONS.map((lOpt) => (
                   <label key={lOpt} className="flex items-center gap-2.5 text-xs text-gray-750 font-medium cursor-pointer py-0.5 select-none hover:text-gray-900 transition">
                     <input
@@ -319,9 +355,16 @@ export default function OnboardingForm({ profile, onUpdateSuccess, onNavigateToA
 
             <div>
               <span className="block text-[11px] font-bold text-gray-500 mb-2.5">
-                Have you completed any previous course in your desired track?
+                Have you completed any previous course in your desired track? <span className="text-rose-500 font-bold ml-0.5">*</span>
               </span>
-              <div className="flex flex-col gap-2" id="prev-course-radio-group">
+              <div 
+                className={`flex flex-col gap-2 p-2 rounded transition ${
+                  attemptedSubmit && !prevCourse
+                    ? "border-2 border-rose-500 ring-2 ring-rose-500/10 bg-rose-50/10"
+                    : "border border-transparent"
+                }`}
+                id="prev-course-radio-group"
+              >
                 {["Yes", "No"].map((option) => (
                   <label key={option} className="flex items-center gap-2.5 text-xs text-gray-750 font-medium cursor-pointer select-none hover:text-gray-900">
                     <input

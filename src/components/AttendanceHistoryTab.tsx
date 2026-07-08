@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Profile, AttendanceRecord, MeetingHistoryRecord, AttendanceAuditLog } from "../types";
 import { getCleanTrackName } from "../utils/trackUtils";
+import { adminUpdateAttendance } from "../firebaseService";
 
 interface AttendanceHistoryTabProps {
   isAdmin: boolean;
@@ -386,31 +387,22 @@ export default function AttendanceHistoryTab({
     setActionSuccessMsg("");
 
     try {
-      const response = await fetch("/api/admin/attendance/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminUserId: currentUserId,
-          targetUserId: editingRecord.userId,
-          meetingId: editingRecord.meetingId,
-          meetingDate: editingRecord.meetingDate,
-          newStatus: newStatusValue
-        })
-      });
+      await adminUpdateAttendance(
+        currentUserId,
+        editingRecord.userId,
+        editingRecord.meetingId,
+        editingRecord.meetingDate,
+        newStatusValue as any
+      );
 
-      const data = await response.json();
-      if (response.ok) {
-        setActionSuccessMsg(`Successfully updated attendance to ${newStatusValue}!`);
-        onStateUpdate(); // Refresh global application state
-        setTimeout(() => {
-          setEditingRecord(null);
-          setActionSuccessMsg("");
-        }, 1500);
-      } else {
-        setActionErrorMsg(data.error || "Failed to submit correction.");
-      }
-    } catch (err) {
-      setActionErrorMsg("Network error occurred while saving.");
+      setActionSuccessMsg(`Successfully updated attendance to ${newStatusValue}!`);
+      onStateUpdate(); // Refresh global application state
+      setTimeout(() => {
+        setEditingRecord(null);
+        setActionSuccessMsg("");
+      }, 1500);
+    } catch (err: any) {
+      setActionErrorMsg(err.message || "Failed to submit correction.");
     }
   };
 

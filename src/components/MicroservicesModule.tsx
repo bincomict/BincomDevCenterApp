@@ -11,6 +11,15 @@ import {
   DailyReportLog
 } from "../types";
 import { 
+  submitStandup,
+  submitDailyReport,
+  submitMicroserviceSummary,
+  submitMicroserviceUpdate,
+  submitDrillSubmission,
+  joinKD,
+  submitSocialLog
+} from "../firebaseService";
+import { 
   BookOpen, 
   CalendarDays, 
   FileEdit, 
@@ -124,18 +133,14 @@ export default function MicroservicesModule({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/student/submit-standup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          type: standupType,
-          content: standupText
-        })
+      await submitStandup({
+        userId: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        type: standupType,
+        content: standupText,
+        track: profile.track
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setStandupText("");
       triggerSuccess(`Successfully recorded your ${standupType} standup summary log.`);
@@ -157,20 +162,16 @@ export default function MicroservicesModule({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/student/submit-daily-report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          accomplishments: reportAccomplishments,
-          hoursSpent: Number(reportHoursSpent) || 0,
-          roadblocks: reportRoadblocks,
-          takeaways: reportTakeaways
-        })
+      await submitDailyReport({
+        userId: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        accomplishments: reportAccomplishments,
+        hoursSpent: Number(reportHoursSpent) || 0,
+        roadblocks: reportRoadblocks,
+        takeaways: reportTakeaways,
+        track: profile.track
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setReportAccomplishments("");
       setReportRoadblocks("");
@@ -196,17 +197,13 @@ export default function MicroservicesModule({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/student/submit-summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          summaryText: pdText
-        })
+      await submitMicroserviceSummary({
+        userId: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        summaryText: pdText,
+        track: profile.track
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setPdText("");
       triggerSuccess("Your 100-word learning summary has been validated, saved, and dispatched for audit!");
@@ -228,19 +225,15 @@ export default function MicroservicesModule({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/student/submit-update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          title: techTitle,
-          url: techUrl,
-          summary: techSummary
-        })
+      await submitMicroserviceUpdate({
+        userId: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        title: techTitle,
+        url: techUrl,
+        summary: techSummary,
+        track: profile.track
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setTechTitle("");
       setTechUrl("");
@@ -264,18 +257,14 @@ export default function MicroservicesModule({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/student/submit-drill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          drillId: selectedDrillId,
-          solutionUrl
-        })
+      await submitDrillSubmission({
+        userId: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        drillId: selectedDrillId,
+        solutionUrl,
+        track: profile.track
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setSolutionUrl("");
       setSelectedDrillId("");
@@ -292,19 +281,10 @@ export default function MicroservicesModule({
   const handleJoinKD = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/student/join-kd", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id })
-      });
+      const newCount = await joinKD(profile.id, profile.fullName);
 
-      const data = await res.json();
-      if (res.ok) {
-        triggerSuccess(`Congratulations! Marking Knowledge Development attendance successfully. Account totals: ${data.count}/16 monthly checkins!`);
-        onStateUpdate();
-      } else {
-        throw new Error(data.error);
-      }
+      triggerSuccess(`Congratulations! Marking Knowledge Development attendance successfully. Account totals: ${newCount}/16 monthly checkins!`);
+      onStateUpdate();
     } catch (err: any) {
       triggerError("KD marker error: " + err.message);
     } finally {
@@ -322,19 +302,15 @@ export default function MicroservicesModule({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/social/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: profile.id,
-          title: socialTitle,
-          link: socialLink,
-          type: socialCategory
-        })
+      await submitSocialLog({
+        userId: profile.id,
+        username: profile.username,
+        fullName: profile.fullName,
+        title: socialTitle,
+        link: socialLink,
+        type: socialCategory,
+        track: profile.track
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setSocialTitle("");
       setSocialLink("");

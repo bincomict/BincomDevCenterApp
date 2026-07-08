@@ -1,7 +1,33 @@
 import React from "react";
 import { Compass, Sparkles, BookCheck, Milestone, ArrowRight } from "lucide-react";
 
-export default function CareerPathway() {
+interface CareerPathwayProps {
+  careerPathways?: {
+    foundation: Array<{ title: string; description: string }>;
+    trackSplit: Array<{ title: string; description: string }>;
+    lateralRoles: Array<{ title: string; description: string }>;
+  } | null;
+}
+
+export default function CareerPathway({ careerPathways }: CareerPathwayProps) {
+  const activePathways = careerPathways || {
+    foundation: [
+      { title: "Onboarding Profiling", description: "Capturing education demographics and choosing tech fields." },
+      { title: "Track Assessment Check", description: "Scoring >= 50% on hard/soft skill checks to proceed." },
+      { title: "Compliance Briefing", description: "Watching orientation stream files and signing agreement sheets." }
+    ],
+    trackSplit: [
+      { title: "8-Module Microservices", description: "Managing KD checkins, sharing news, writing 100-word daily briefs." },
+      { title: "Weekly Drills Homework", description: "Submitting real-world homework solutions on public GitHub repos." },
+      { title: "Team sync scrums", description: "Assigned to client projects (e.g. eMigr8) with Jitsi integration." }
+    ],
+    lateralRoles: [
+      { title: "Public Artifact Loggers", description: "Authoring Medium articles, and organizing tech hackathons." },
+      { title: "Career Mentoring", description: "Personalised mock evaluations and interview rehearsals." },
+      { title: "Global Client Placement", description: "Attracting high-paying remote roles in the UK, Europe, or USA." }
+    ]
+  };
+
   return (
     <div className="space-y-6" id="career-pathway-root">
       
@@ -33,20 +59,12 @@ export default function CareerPathway() {
           </p>
 
           <div className="space-y-2.5 pt-1">
-            <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-xs">
-              <p className="font-bold text-gray-800">1. Onboarding Profiling</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Capturing education demographics and choosing tech fields.</p>
-            </div>
-            
-            <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-xs">
-              <p className="font-bold text-gray-800">2. Track Assessment Check</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Scoring &gt;= 50% on hard/soft skill checks to proceed.</p>
-            </div>
-
-            <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-xs">
-              <p className="font-bold text-gray-800">3. Compliance Briefing</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Watching orientation stream files and signing agreement sheets.</p>
-            </div>
+            {activePathways.foundation.map((item, index) => (
+              <div key={index} className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-xs animate-fade-in">
+                <p className="font-bold text-gray-800">{index + 1}. {item.title}</p>
+                <p className="text-gray-500 text-[11px] mt-0.5">{item.description}</p>
+              </div>
+            ))}
           </div>
           
           <div className="hidden md:flex absolute top-1/2 -right-3.5 transform -translate-y-1/2 w-7 h-7 rounded-full bg-white border border-gray-200 text-[#4B5E40] items-center justify-center z-10 shadow-xs select-none">
@@ -69,20 +87,12 @@ export default function CareerPathway() {
           </p>
 
           <div className="space-y-2.5 pt-1">
-            <div className="p-3 bg-[#F8FAF8] rounded-xl border border-gray-100 text-xs">
-              <p className="font-bold text-[#4B5E40]">1. 8-Module Microservices</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Managing KD checkins, sharing news, writing 100-word daily briefs.</p>
-            </div>
-
-            <div className="p-3 bg-[#F8FAF8] rounded-xl border border-gray-100 text-xs">
-              <p className="font-bold text-[#4B5E40]">2. Weekly Drills Homework</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Submitting real-world homework solutions on public GitHub repos.</p>
-            </div>
-
-            <div className="p-3 bg-[#F8FAF8] rounded-xl border border-gray-100 text-xs">
-              <p className="font-bold text-[#4B5E40]">3. Team sync scrums</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Assigned to client projects (e.g. eMigr8) with Jitsi integration.</p>
-            </div>
+            {activePathways.trackSplit.map((item, index) => (
+              <div key={index} className="p-3 bg-[#F8FAF8] rounded-xl border border-gray-100 text-xs animate-fade-in">
+                <p className="font-bold text-[#4B5E40]">{index + 1}. {item.title}</p>
+                <p className="text-gray-500 text-[11px] mt-0.5">{item.description}</p>
+              </div>
+            ))}
           </div>
 
           <div className="hidden md:flex absolute top-1/2 -right-3.5 transform -translate-y-1/2 w-7 h-7 rounded-full bg-white border border-gray-200 text-[#4B5E40] items-center justify-center z-10 shadow-xs select-none">
@@ -105,22 +115,25 @@ export default function CareerPathway() {
           </p>
 
           <div className="space-y-2.5 pt-1">
-            <div className="p-3 bg-indigo-50/20 rounded-xl border border-orange-100 text-xs">
-              <p className="font-bold text-indigo-900">1. Public Artifact Loggers</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Authoring Medium articles, and organizing tech hackathons.</p>
-            </div>
-
-            <div className="p-3 bg-indigo-50/20 rounded-xl border border-orange-100 text-xs">
-              <p className="font-bold text-indigo-900">2. Career Mentoring</p>
-              <p className="text-gray-500 text-[11px] mt-0.5">Personalised mock evaluations and interview rehearsals.</p>
-            </div>
-
-            <div className="p-3 bg-indigo-50/30 rounded-xl border border-indigo-100 text-xs">
-              <p className="font-bold text-indigo-950 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-600" /> Global Client Placement
-              </p>
-              <p className="text-gray-600 text-[11px] mt-0.5 font-semibold">Attracting high-paying remote roles in the UK, Europe, or USA.</p>
-            </div>
+            {activePathways.lateralRoles.map((item, index) => {
+              const isLast = index === activePathways.lateralRoles.length - 1;
+              return (
+                <div 
+                  key={index} 
+                  className={`p-3 rounded-xl border text-xs animate-fade-in ${
+                    isLast 
+                      ? "bg-indigo-50/30 border-indigo-100" 
+                      : "bg-indigo-50/20 border-orange-100"
+                  }`}
+                >
+                  <p className={`font-bold flex items-center gap-1 ${isLast ? "text-indigo-950" : "text-indigo-900"}`}>
+                    {isLast && <Sparkles className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />}
+                    {index + 1}. {item.title}
+                  </p>
+                  <p className="text-gray-500 text-[11px] mt-0.5">{item.description}</p>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

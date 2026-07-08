@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
   }
 
   const getFirebaseVar = (key: string, envName: string) => {
-    return firebaseConfigFallback[key] || process.env[envName] || env[envName] || "";
+    return process.env[envName] || env[envName] || firebaseConfigFallback[key] || "";
   };
 
   return {
@@ -40,6 +40,7 @@ export default defineConfig(({ mode }) => {
       'process.env.VITE_FIREBASE_API_KEY': JSON.stringify(getFirebaseVar('apiKey', 'VITE_FIREBASE_API_KEY')),
       'process.env.VITE_FIREBASE_AUTH_DOMAIN': JSON.stringify(getFirebaseVar('authDomain', 'VITE_FIREBASE_AUTH_DOMAIN')),
       'process.env.VITE_FIREBASE_PROJECT_ID': JSON.stringify(getFirebaseVar('projectId', 'VITE_FIREBASE_PROJECT_ID')),
+      'process.env.VITE_FIREBASE_DATABASE_ID': JSON.stringify(getFirebaseVar('firestoreDatabaseId', 'VITE_FIREBASE_DATABASE_ID')),
       'process.env.VITE_FIREBASE_STORAGE_BUCKET': JSON.stringify(getFirebaseVar('storageBucket', 'VITE_FIREBASE_STORAGE_BUCKET')),
       'process.env.VITE_FIREBASE_MESSAGING_SENDER_ID': JSON.stringify(getFirebaseVar('messagingSenderId', 'VITE_FIREBASE_MESSAGING_SENDER_ID')),
       'process.env.VITE_FIREBASE_APP_ID': JSON.stringify(getFirebaseVar('appId', 'VITE_FIREBASE_APP_ID')),
@@ -47,6 +48,7 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_FIREBASE_API_KEY': JSON.stringify(getFirebaseVar('apiKey', 'VITE_FIREBASE_API_KEY')),
       'import.meta.env.VITE_FIREBASE_AUTH_DOMAIN': JSON.stringify(getFirebaseVar('authDomain', 'VITE_FIREBASE_AUTH_DOMAIN')),
       'import.meta.env.VITE_FIREBASE_PROJECT_ID': JSON.stringify(getFirebaseVar('projectId', 'VITE_FIREBASE_PROJECT_ID')),
+      'import.meta.env.VITE_FIREBASE_DATABASE_ID': JSON.stringify(getFirebaseVar('firestoreDatabaseId', 'VITE_FIREBASE_DATABASE_ID')),
       'import.meta.env.VITE_FIREBASE_STORAGE_BUCKET': JSON.stringify(getFirebaseVar('storageBucket', 'VITE_FIREBASE_STORAGE_BUCKET')),
       'import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID': JSON.stringify(getFirebaseVar('messagingSenderId', 'VITE_FIREBASE_MESSAGING_SENDER_ID')),
       'import.meta.env.VITE_FIREBASE_APP_ID': JSON.stringify(getFirebaseVar('appId', 'VITE_FIREBASE_APP_ID')),
