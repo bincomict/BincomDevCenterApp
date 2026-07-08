@@ -230,14 +230,7 @@ interface AdminPanelProps {
   adminProfile?: Profile;
   state: any;
   onStateUpdate: () => void;
-}
-
-export default function AdminPanel({
-  adminProfile,
-  state,
-  onStateUpdate,
-}: AdminPanelProps) {
-  const [adminTab, setAdminTab] = useState<
+  adminTab: 
     | "funnel"
     | "reviews"
     | "drills"
@@ -253,8 +246,31 @@ export default function AdminPanel({
     | "attendance_history"
     | "tasks_config"
     | "microservices_config"
-    | "pathways_config"
-  >("funnel");
+    | "pathways_config";
+  setAdminTab: (tab: any) => void;
+}
+
+export default function AdminPanel({
+  adminProfile,
+  state,
+  onStateUpdate,
+  adminTab,
+  setAdminTab,
+}: AdminPanelProps) {
+
+
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const [loading, setLoading] = useState(false);
   const [purgingDb, setPurgingDb] = useState(false);
@@ -1416,253 +1432,138 @@ export default function AdminPanel({
     );
   };
 
+  const tabDetails: Record<string, { label: string; icon: React.ComponentType<{ className?: string }> }> = {
+    funnel: { label: "Operations Funnel", icon: BarChart4 },
+    reviews: { label: `Student Reviews (${standardUsers.filter((u) => u.status !== "dashboard").length})`, icon: Users },
+    drills: { label: `Weekly Drills (${state.drillSubmissions.filter((s) => s.status === "Pending").length})`, icon: Award },
+    meetings: { label: `Meetings Management (${state.meetings.length})`, icon: Calendar },
+    reminders: { label: "Warning Dispatches", icon: Send },
+    cron: { label: "00:00 WAT Cron Sync", icon: Cpu },
+    export: { label: "Export Ledger CSV", icon: FileDown },
+    owners: { label: "Module Owners", icon: ShieldCheck },
+    levels: { label: "Levels Promotion Desk", icon: Users },
+    kd_desk: { label: "KD Desk (Knowledge Check)", icon: BookOpen },
+    pd_desk: { label: "PD Desk (Project Delivery)", icon: FileEdit },
+    standup_desk: { label: "Standup Compliance Desk", icon: Calendar },
+    attendance_history: { label: "Attendance Ledger History", icon: History },
+    tasks_config: { label: "Default Tasks Config", icon: Settings },
+    microservices_config: { label: "Microservices Config", icon: Layers },
+    pathways_config: { label: "Career Pathways Config", icon: GraduationCap },
+  };
+
+  const adminTabGroups = [
+    {
+      label: "Core Operations",
+      items: [
+        { id: "funnel", label: "Operations Funnel", icon: BarChart4 },
+        { id: "reviews", label: `Student Reviews (${standardUsers.filter((u) => u.status !== "dashboard").length})`, icon: Users },
+        { id: "drills", label: `Weekly Drills (${state.drillSubmissions.filter((s) => s.status === "Pending").length})`, icon: Award },
+        { id: "meetings", label: `Meetings Management (${state.meetings.length})`, icon: Calendar },
+      ]
+    },
+    {
+      label: "Desks & Registers",
+      items: [
+        { id: "kd_desk", label: "📚 KD Desk (Knowledge Check)", icon: BookOpen },
+        { id: "pd_desk", label: "💡 PD Desk (Project Delivery)", icon: FileEdit },
+        { id: "standup_desk", label: "☀️ Standup Desk", icon: Calendar },
+        { id: "attendance_history", label: "📋 Attendance Ledger", icon: History },
+        { id: "levels", label: "📈 Levels Promotion Desk", icon: Users },
+        { id: "reminders", label: "Warning Dispatches", icon: Send },
+      ]
+    },
+    {
+      label: "System & Config",
+      items: [
+        { id: "cron", label: "00:00 WAT Cron Sync", icon: Cpu },
+        { id: "export", label: "Export Ledger CSV", icon: FileDown },
+        { id: "owners", label: "👥 Module Owners", icon: ShieldCheck },
+        { id: "tasks_config", label: "⚙️ Default Tasks Config", icon: Settings },
+        { id: "microservices_config", label: "🔌 Microservices Config", icon: Layers },
+        { id: "pathways_config", label: "🎓 Career Pathways Config", icon: GraduationCap },
+      ]
+    }
+  ];
+
+  const activeTabInfo = tabDetails[adminTab] || { label: "Select View", icon: Filter };
+  const ActiveIcon = activeTabInfo.icon;
+
   return (
     <div className="space-y-6" id="admin-module-root">
-      {/* Sub Tabs */}
-      <div className="flex flex-wrap gap-2 bg-[#F8FAF8] p-2.5 rounded-xl border border-gray-100 select-none">
-        <button
-          onClick={() => {
-            setAdminTab("funnel");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "funnel"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <BarChart4 className="w-4 h-4" /> Operations Funnel
-        </button>
-        <button
-          onClick={() => {
-            setAdminTab("reviews");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "reviews"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Users className="w-4 h-4" /> Student Reviews (
-          {standardUsers.filter((u) => u.status !== "dashboard").length})
-        </button>
-        <button
-          onClick={() => {
-            setAdminTab("drills");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "drills"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Award className="w-4 h-4" /> Weekly Drills (
-          {state.drillSubmissions.filter((s) => s.status === "Pending").length})
-        </button>
-        <button
-          onClick={() => {
-            setAdminTab("meetings");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "meetings"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Calendar className="w-4 h-4" /> Meetings Management (
-          {state.meetings.length})
-        </button>
-        <button
-          onClick={() => {
-            setAdminTab("reminders");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "reminders"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Send className="w-4 h-4" /> Warning Dispatches
-        </button>
-        <button
-          onClick={() => {
-            setAdminTab("cron");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "cron"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Cpu className="w-4 h-4" /> 00:00 WAT Cron Sync
-        </button>
-        <button
-          onClick={() => {
-            setAdminTab("export");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "export"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <FileDown className="w-4 h-4" /> Export Ledger
-        </button>
-        <button
-          id="admin-tab-owners"
-          onClick={() => {
-            setAdminTab("owners");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "owners"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <ShieldCheck className="w-4 h-4" /> 👥 Owners
-        </button>
-        <button
-          id="admin-tab-levels"
-          onClick={() => {
-            setAdminTab("levels");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "levels"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Users className="w-4 h-4" /> 📈 Levels
-        </button>
-        <button
-          id="admin-tab-kd-desk"
-          onClick={() => {
-            setAdminTab("kd_desk");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "kd_desk"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <BookOpen className="w-4 h-4" /> 📚 KD Desk
-        </button>
-        <button
-          id="admin-tab-pd-desk"
-          onClick={() => {
-            setAdminTab("pd_desk");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "pd_desk"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <FileEdit className="w-4 h-4" /> 💡 PD Desk
-        </button>
-        <button
-          id="admin-tab-standup-desk"
-          onClick={() => {
-            setAdminTab("standup_desk");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "standup_desk"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Calendar className="w-4 h-4" /> ☀️ Standup Desk
-        </button>
-        <button
-          id="admin-tab-attendance-history"
-          onClick={() => {
-            setAdminTab("attendance_history");
-            setErrorMsg("");
-            setSuccessMsg("");
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "attendance_history"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <History className="w-4 h-4" /> 📋 Attendance Ledger
-        </button>
+      {/* Dropdown-based Sub Tabs Menu */}
+      <div className="bg-white p-4 rounded-xl border border-gray-150 shadow-3xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 select-none animate-fade-in" id="admin-view-selector-container">
+        <div>
+          <h3 className="text-sm font-extrabold text-gray-950 flex items-center gap-1.5">
+            <span className="p-1 bg-[#4B5E40]/10 text-[#4B5E40] rounded">🛡️</span>
+            Administrative Operations
+          </h3>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            Switch between analytical funnels, student compliance reviews, configuration desks, and logs.
+          </p>
+        </div>
 
-        <button
-          id="admin-tab-tasks-config"
-          onClick={() => {
-            setAdminTab("tasks_config");
-            setErrorMsg("");
-            setSuccessMsg("");
-            setEditingTaskId(null);
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "tasks_config"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Settings className="w-4 h-4" /> ⚙️ Default Tasks
-        </button>
+        <div className="relative shrink-0" ref={dropdownRef}>
+          <button
+            type="button"
+            onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+            className="w-full sm:w-72 flex items-center justify-between gap-3 px-4 py-2.5 bg-[#F8FAF8] hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-800 transition cursor-pointer shadow-3xs focus:outline-none focus:ring-2 focus:ring-[#4B5E40]/20"
+            id="admin-dropdown-trigger"
+          >
+            <span className="flex items-center gap-2 text-gray-800">
+              <ActiveIcon className="w-4 h-4 text-[#4B5E40]" />
+              {activeTabInfo.label}
+            </span>
+            <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${isDropdownOpen ? "rotate-180" : ""}`} />
+          </button>
 
-        <button
-          id="admin-tab-microservices-config"
-          onClick={() => {
-            setAdminTab("microservices_config");
-            setErrorMsg("");
-            setSuccessMsg("");
-            setEditingMicroserviceId(null);
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "microservices_config"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <Layers className="w-4 h-4" /> 🔌 Microservices Config
-        </button>
-
-        <button
-          id="admin-tab-pathways-config"
-          onClick={() => {
-            setAdminTab("pathways_config");
-            setErrorMsg("");
-            setSuccessMsg("");
-            setEditingPathwaySection(null);
-            setEditingPathwayIndex(null);
-          }}
-          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-            adminTab === "pathways_config"
-              ? "bg-[#4B5E40] text-white shadow-xs"
-              : "text-gray-600 hover:bg-gray-150"
-          }`}
-        >
-          <GraduationCap className="w-4 h-4" /> 🎓 Career Pathways Config
-        </button>
+          {isDropdownOpen && (
+            <div 
+              className="absolute right-0 mt-2 w-full sm:w-85 max-h-96 overflow-y-auto bg-white rounded-xl border border-gray-150 shadow-xl z-50 py-2 divide-y divide-gray-100 animate-slide-in scrollbar-thin scrollbar-thumb-gray-200"
+              id="admin-dropdown-menu"
+            >
+              {adminTabGroups.map((group, gIdx) => (
+                <div key={gIdx} className="p-1.5">
+                  <span className="block px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-gray-400">
+                    {group.label}
+                  </span>
+                  <div className="mt-1 space-y-0.5">
+                    {group.items.map((item) => {
+                      const ItemIcon = item.icon;
+                      const isSelected = adminTab === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            setAdminTab(item.id as any);
+                            setIsDropdownOpen(false);
+                            setErrorMsg("");
+                            setSuccessMsg("");
+                            if (item.id === "tasks_config") setEditingTaskId(null);
+                            if (item.id === "microservices_config") setEditingMicroserviceId(null);
+                            if (item.id === "pathways_config") {
+                              setEditingPathwaySection(null);
+                              setEditingPathwayIndex(null);
+                            }
+                          }}
+                          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition text-left cursor-pointer ${
+                            isSelected 
+                              ? "bg-[#4B5E40] text-white font-bold" 
+                              : "text-gray-700 hover:bg-gray-50 hover:text-gray-950"
+                          }`}
+                        >
+                          <ItemIcon className={`w-4 h-4 ${isSelected ? "text-white" : "text-[#4B5E40]"}`} />
+                          <span className="truncate">{item.label}</span>
+                          {isSelected && <span className="ml-auto text-xs">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {errorMsg && (

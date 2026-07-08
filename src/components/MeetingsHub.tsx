@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Meeting, AttendanceRecord, Profile } from "../types";
-import { Video, Clock, CheckCircle, Play, Users, Landmark, Key, Shield, XCircle, History } from "lucide-react";
+import { Video, Clock, CheckCircle, Play, Users, Landmark, Key, Shield, XCircle, History, ChevronDown } from "lucide-react";
 import { getStandupDetails, getCleanTrackName, shouldShowMeetingOnDashboard, getLagosDateString, formatMeetingDates } from "../utils/trackUtils";
 import AttendanceHistoryTab from "./AttendanceHistoryTab";
 
@@ -12,6 +12,8 @@ interface MeetingsHubProps {
   meetingAssignments?: any[];
   state?: any;
   onStateUpdate?: () => void;
+  hubTab: "meetings" | "history";
+  setHubTab: (tab: "meetings" | "history") => void;
 }
 
 // Track/team links mapping dictionary for dynamic Zoom/Jitsi configuration
@@ -96,14 +98,27 @@ export default function MeetingsHub({
   onJoinMeeting, 
   meetingAssignments = [],
   state,
-  onStateUpdate
+  onStateUpdate,
+  hubTab,
+  setHubTab,
 }: MeetingsHubProps) {
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [timeFilter, setTimeFilter] = useState<string>("all");
   const [customStart, setCustomStart] = useState<string>("09:00 AM");
   const [customEnd, setCustomEnd] = useState<string>("05:00 PM");
   const [sortOption, setSortOption] = useState<"time" | "title">("time");
-  const [hubTab, setHubTab] = useState<"meetings" | "history">("meetings");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
   const isAdmin = profile.role === "admin";
 
   const parseFlexibleTimeToMinutes = (timeStr: string): number => {
@@ -646,28 +661,67 @@ export default function MeetingsHub({
         </div>
       </div>
 
-      {/* Sub-tab Navigation Bar for Personal Attendance History */}
-      <div className="flex bg-gray-100 p-1 rounded-xl border border-gray-200 select-none max-w-sm">
+      {/* Sub-tab Dropdown for Personal Attendance History */}
+      <div className="relative inline-block text-left select-none max-w-xs w-full mb-2" ref={dropdownRef}>
         <button
-          onClick={() => setHubTab("meetings")}
-          className={`flex-1 px-4 py-1.5 text-xs font-bold rounded-lg transition text-center cursor-pointer ${
-            hubTab === "meetings"
-              ? "bg-white text-gray-950 shadow-xs border border-gray-200/50"
-              : "text-gray-500 hover:text-gray-900"
-          }`}
+          type="button"
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+          className="w-full flex items-center justify-between gap-3 px-4 py-2.5 bg-gray-100 hover:bg-gray-150 border border-gray-200 rounded-xl text-xs font-bold text-gray-800 transition cursor-pointer shadow-3xs focus:outline-none"
+          id="meetings-hub-dropdown-trigger"
         >
-          📅 Active Sessions
+          <span className="flex items-center gap-2">
+            {hubTab === "meetings" ? (
+              <>
+                <span className="text-[#4B5E40]">📅</span> Active Sessions
+              </>
+            ) : (
+              <>
+                <span className="text-indigo-600">📋</span> Attendance History
+              </>
+            )}
+          </span>
+          <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${isDropdownOpen ? "rotate-180" : ""}`} />
         </button>
-        <button
-          onClick={() => setHubTab("history")}
-          className={`flex-1 px-4 py-1.5 text-xs font-bold rounded-lg transition text-center cursor-pointer ${
-            hubTab === "history"
-              ? "bg-white text-gray-950 shadow-xs border border-gray-200/50"
-              : "text-gray-500 hover:text-gray-900"
-          }`}
-        >
-          📋 Attendance History
-        </button>
+
+        {isDropdownOpen && (
+          <div 
+            className="absolute left-0 mt-2 w-full bg-white rounded-xl border border-gray-200 shadow-lg z-30 py-1 divide-y divide-gray-100 animate-slide-in"
+            id="meetings-hub-dropdown-menu"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setHubTab("meetings");
+                setIsDropdownOpen(false);
+              }}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition text-left cursor-pointer ${
+                hubTab === "meetings" 
+                  ? "bg-[#4B5E40] text-white font-bold" 
+                  : "text-gray-700 hover:bg-gray-50"
+              }`}
+            >
+              <span className="text-xs">📅</span>
+              <span>Active Sessions</span>
+              {hubTab === "meetings" && <span className="ml-auto text-xs">✓</span>}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHubTab("history");
+                setIsDropdownOpen(false);
+              }}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition text-left cursor-pointer ${
+                hubTab === "history" 
+                  ? "bg-indigo-600 text-white font-bold" 
+                  : "text-gray-700 hover:bg-gray-50"
+              }`}
+            >
+              <span className="text-xs">📋</span>
+              <span>Attendance History</span>
+              {hubTab === "history" && <span className="ml-auto text-xs">✓</span>}
+            </button>
+          </div>
+        )}
       </div>
 
       {hubTab === "history" ? (

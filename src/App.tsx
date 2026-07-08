@@ -69,9 +69,29 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<"dashboard" | "hub" | "microservices" | "projects" | "leaderboard" | "pathway" | "admin">("dashboard");
   const [activeSubTab, setActiveSubTab] = useState<"kd" | "standups" | "daily-report" | "pd" | "tech" | "drills" | "social">("kd");
+  const [adminTab, setAdminTab] = useState<
+    | "funnel"
+    | "reviews"
+    | "drills"
+    | "meetings"
+    | "reminders"
+    | "cron"
+    | "export"
+    | "owners"
+    | "levels"
+    | "kd_desk"
+    | "pd_desk"
+    | "standup_desk"
+    | "attendance_history"
+    | "tasks_config"
+    | "microservices_config"
+    | "pathways_config"
+  >("funnel");
+  const [hubTab, setHubTab] = useState<"meetings" | "history">("meetings");
   
   // Loading & error cues
   const [fetching, setFetching] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // 1. Listen to Auth changes + seed DB if empty
   useEffect(() => {
@@ -240,7 +260,15 @@ export default function App() {
       <SidebarNav 
         profile={profile} 
         activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
+        setActiveTab={setActiveTab}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        adminTab={adminTab}
+        setAdminTab={setAdminTab}
+        hubTab={hubTab}
+        setHubTab={setHubTab}
+        activeSubTab={activeSubTab}
+        setActiveSubTab={setActiveSubTab}
       />
 
       {/* Right Column: TopNav & independent scrolling workspace page */}
@@ -253,6 +281,7 @@ export default function App() {
           showOnboardingForm={false}
           showAssessmentGrid={false}
           showOrientationGate={false}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         />
 
         {/* Reminders banner (under TopNav, on the right side only!) */}
@@ -330,6 +359,8 @@ export default function App() {
                   meetingAssignments={state.meetingAssignments}
                   state={state}
                   onStateUpdate={fetchLatestState}
+                  hubTab={hubTab}
+                  setHubTab={setHubTab}
                 />
               )}
 
@@ -367,6 +398,8 @@ export default function App() {
                   adminProfile={profile}
                   state={state} 
                   onStateUpdate={fetchLatestState} 
+                  adminTab={adminTab}
+                  setAdminTab={setAdminTab}
                 />
               )}
 

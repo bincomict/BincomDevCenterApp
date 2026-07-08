@@ -932,7 +932,7 @@ export default function AttendanceHistoryTab({
                     {/* EXPANDED DETAILS */}
                     {isExpanded && (
                       <div className="bg-gray-50/50 p-5 border-t border-gray-100">
-                        <div className="bg-white rounded-lg border border-gray-150 overflow-hidden">
+                        <div className="bg-white rounded-lg border border-gray-150 overflow-x-auto">
                           <table className="w-full text-left text-xs border-collapse">
                             <thead>
                               <tr className="bg-gray-50 border-b border-gray-150 text-[9px] uppercase tracking-wider font-extrabold text-gray-400">
