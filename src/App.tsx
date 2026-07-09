@@ -90,6 +90,7 @@ export default function App() {
   const [hubTab, setHubTab] = useState<"meetings" | "history">("meetings");
   
   // Loading & error cues
+  const [authLoading, setAuthLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -108,6 +109,7 @@ export default function App() {
           setActiveTab("dashboard");
         }
       }
+      setAuthLoading(false);
     });
 
     return () => unsubscribe();
@@ -195,6 +197,27 @@ export default function App() {
   };
 
   // Smart Routing Gating Nodes based on Student status (Section 3)
+  if (authLoading) {
+    return (
+      <div className="h-screen bg-[#F8FAF8] flex flex-col items-center justify-center font-sans" id="app-loading-screen">
+        <div className="text-center space-y-5 flex flex-col items-center">
+          <div className="w-16 h-16 bg-[#4B5E40] rounded-2xl flex items-center justify-center text-white text-3xl font-black shadow-lg animate-pulse">
+            B
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-lg font-bold text-gray-800 tracking-tight">Bincom Dev Center</h3>
+            <p className="text-xs text-gray-400 font-medium tracking-wide">Synchronizing your workspace...</p>
+          </div>
+          <div className="flex items-center gap-1.5 mt-2">
+            <div className="w-2.5 h-2.5 rounded-full bg-[#4B5E40] animate-bounce" style={{ animationDelay: "0ms" }} />
+            <div className="w-2.5 h-2.5 rounded-full bg-[#4B5E40] animate-bounce" style={{ animationDelay: "150ms" }} />
+            <div className="w-2.5 h-2.5 rounded-full bg-[#4B5E40] animate-bounce" style={{ animationDelay: "300ms" }} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!profile) {
     return (
       <>

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Profile } from "../types";
 import { 
   Users, 
@@ -7,6 +7,7 @@ import {
   LayoutDashboard, 
   LineChart, 
   Award,
+  ChevronDown,
   X
 } from "lucide-react";
 
@@ -71,6 +72,21 @@ export default function SidebarNav({
   activeSubTab,
   setActiveSubTab,
 }: SidebarNavProps) {
+  const [isAdminExpanded, setIsAdminExpanded] = useState(activeTab === "admin");
+  const [isMeetingsExpanded, setIsMeetingsExpanded] = useState(activeTab === "hub");
+  const [isMicroservicesExpanded, setIsMicroservicesExpanded] = useState(activeTab === "microservices");
+
+  // Keep expanded states in sync if tab changes, but let the user override
+  useEffect(() => {
+    if (activeTab === "admin") {
+      setIsAdminExpanded(true);
+    } else if (activeTab === "hub") {
+      setIsMeetingsExpanded(true);
+    } else if (activeTab === "microservices") {
+      setIsMicroservicesExpanded(true);
+    }
+  }, [activeTab]);
+
   // Extract user initials
   const initials = profile.fullName
     ? profile.fullName
@@ -141,18 +157,29 @@ export default function SidebarNav({
           {/* Admin Mode triggers selection widget */}
           {profile.role === "admin" && (
             <div className="space-y-1">
-              <button
-                id="nav-admin-btn"
-                onClick={() => handleTabClick("admin")}
-                className={`nav-link flex items-center gap-2.5 px-3 py-2 text-xs rounded-xl transition cursor-pointer text-left w-full ${
-                  activeTab === "admin" 
-                    ? "bg-white text-[#4B5E40] shadow font-bold" 
-                    : "text-white/75 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                <LayoutDashboard className="w-4 h-4 shrink-0" /> Admins Dashboard
-              </button>
-              {activeTab === "admin" && (
+              <div className="flex items-center justify-between w-full gap-1">
+                <button
+                  id="nav-admin-btn"
+                  onClick={() => handleTabClick("admin")}
+                  className={`flex-1 flex items-center gap-2.5 px-3 py-2 text-xs rounded-xl transition cursor-pointer text-left ${
+                    activeTab === "admin" 
+                      ? "bg-white text-[#4B5E40] shadow font-bold" 
+                      : "text-white/75 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  <LayoutDashboard className="w-4 h-4 shrink-0" />
+                  <span className="flex-1 truncate">Admins Dashboard</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsAdminExpanded(!isAdminExpanded)}
+                  className={`p-2 rounded-xl transition cursor-pointer text-white/70 hover:text-white hover:bg-white/10 shrink-0`}
+                  title={isAdminExpanded ? "Collapse Admin Menu" : "Expand Admin Menu"}
+                >
+                  <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isAdminExpanded ? "rotate-180" : ""}`} />
+                </button>
+              </div>
+              {isAdminExpanded && (
                 <div className="ml-4 pl-2.5 border-l border-white/20 space-y-0.5 mt-1 animate-fade-in" id="admin-sidebar-sublist">
                   {adminSubTabs.map((sub) => (
                     <button
@@ -187,18 +214,29 @@ export default function SidebarNav({
           </div>
 
           <div className="space-y-1">
-            <button
-              id="nav-meetings-btn"
-              onClick={() => handleTabClick("hub")}
-              className={`nav-link flex items-center gap-2.5 px-3 py-2 text-xs rounded-xl transition cursor-pointer text-left w-full ${
-                activeTab === "hub" 
-                  ? "bg-white text-[#4B5E40] shadow font-bold" 
-                  : "text-white/75 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <Video className="w-4 h-4 shrink-0" /> Meetings
-            </button>
-            {activeTab === "hub" && (
+            <div className="flex items-center justify-between w-full gap-1">
+              <button
+                id="nav-meetings-btn"
+                onClick={() => handleTabClick("hub")}
+                className={`flex-1 flex items-center gap-2.5 px-3 py-2 text-xs rounded-xl transition cursor-pointer text-left ${
+                  activeTab === "hub" 
+                    ? "bg-white text-[#4B5E40] shadow font-bold" 
+                    : "text-white/75 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Video className="w-4 h-4 shrink-0" />
+                <span className="flex-1 truncate">Meetings</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMeetingsExpanded(!isMeetingsExpanded)}
+                className={`p-2 rounded-xl transition cursor-pointer text-white/70 hover:text-white hover:bg-white/10 shrink-0`}
+                title={isMeetingsExpanded ? "Collapse Meetings Menu" : "Expand Meetings Menu"}
+              >
+                <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isMeetingsExpanded ? "rotate-180" : ""}`} />
+              </button>
+            </div>
+            {isMeetingsExpanded && (
               <div className="ml-4 pl-2.5 border-l border-white/20 space-y-0.5 mt-1 animate-fade-in" id="hub-sidebar-sublist">
                 {hubSubTabs.map((sub) => (
                   <button
@@ -218,18 +256,29 @@ export default function SidebarNav({
           </div>
 
           <div className="space-y-1">
-            <button
-              id="nav-microservices-btn"
-              onClick={() => handleTabClick("microservices")}
-              className={`nav-link flex items-center gap-2.5 px-3 py-2 text-xs rounded-xl transition cursor-pointer text-left w-full ${
-                activeTab === "microservices" 
-                  ? "bg-white text-[#4B5E40] shadow font-bold" 
-                  : "text-white/75 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <Layers className="w-4 h-4 shrink-0" /> Microservice Modules
-            </button>
-            {activeTab === "microservices" && (
+            <div className="flex items-center justify-between w-full gap-1">
+              <button
+                id="nav-microservices-btn"
+                onClick={() => handleTabClick("microservices")}
+                className={`flex-1 flex items-center gap-2.5 px-3 py-2 text-xs rounded-xl transition cursor-pointer text-left ${
+                  activeTab === "microservices" 
+                    ? "bg-white text-[#4B5E40] shadow font-bold" 
+                    : "text-white/75 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Layers className="w-4 h-4 shrink-0" />
+                <span className="flex-1 truncate">Microservice Modules</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMicroservicesExpanded(!isMicroservicesExpanded)}
+                className={`p-2 rounded-xl transition cursor-pointer text-white/70 hover:text-white hover:bg-white/10 shrink-0`}
+                title={isMicroservicesExpanded ? "Collapse Microservices Menu" : "Expand Microservices Menu"}
+              >
+                <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isMicroservicesExpanded ? "rotate-180" : ""}`} />
+              </button>
+            </div>
+            {isMicroservicesExpanded && (
               <div className="ml-4 pl-2.5 border-l border-white/20 space-y-0.5 mt-1 animate-fade-in" id="microservices-sidebar-sublist">
                 {microservicesSubTabs.map((sub) => (
                   <button
