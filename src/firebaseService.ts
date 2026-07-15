@@ -19,7 +19,7 @@ import {
   onAuthStateChanged
 } from "firebase/auth";
 import { db, auth } from "./firebase";
-import { Profile, Meeting, AttendanceRecord, WeeklyDrill, WeeklyDrillSubmission, MeetingAssignment } from "./types";
+import { Profile, Meeting, AttendanceRecord, WeeklyDrill, WeeklyDrillSubmission, MeetingAssignment, MeetingHistoryRecord } from "./types";
 
 export enum OperationType {
   CREATE = 'create',
@@ -48,8 +48,11 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const isPermissionError = errMsg.toLowerCase().includes("permission") || errMsg.toLowerCase().includes("insufficient");
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -64,8 +67,14 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
+
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+
+  if (isPermissionError) {
+    throw new Error(JSON.stringify(errInfo));
+  } else {
+    console.warn('Gracefully handled non-permission Firestore transport/offline error:', errMsg);
+  }
 }
 
 // --- Timezone and Time Filtering Helpers (copied from server.ts) ---
@@ -156,51 +165,71 @@ export const formatMinutesToTimeString = (minsPastMidnight: number): string => {
 export const listenToAuthChanges = (onUserLoaded: (profile: Profile | null) => void) => {
   return onAuthStateChanged(auth, async (user) => {
     if (user) {
-      // Fetch Firestore user profile
-      let userDoc = await getDoc(doc(db, "profiles", user.uid));
-      let profileData: Profile | null = null;
+      try {
+        // Fetch Firestore user profile
+        let userDoc = await getDoc(doc(db, "profiles", user.uid));
+        let profileData: Profile | null = null;
 
-      if (userDoc.exists()) {
-        profileData = userDoc.data() as Profile;
-      } else {
-        // Check if there is an existing seeded/mock profile with this email under a different ID
-        const email = user.email || "";
-        if (email) {
-          const q = query(collection(db, "profiles"), where("email", "==", email.trim().toLowerCase()));
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-            const oldDoc = snapshot.docs[0];
-            const oldData = oldDoc.data() as Profile;
-            profileData = {
-              ...oldData,
-              id: user.uid
-            };
-            await setDoc(doc(db, "profiles", user.uid), profileData);
-            if (oldDoc.id !== user.uid) {
-              try {
-                await deleteDoc(doc(db, "profiles", oldDoc.id));
-              } catch (e) {
-                console.warn("Could not delete old profile doc during migration:", e);
+        if (userDoc.exists()) {
+          profileData = userDoc.data() as Profile;
+        } else {
+          // Check if there is an existing seeded/mock profile with this email under a different ID
+          const email = user.email || "";
+          if (email) {
+            const q = query(collection(db, "profiles"), where("email", "==", email.trim().toLowerCase()));
+            const snapshot = await getDocs(q);
+            if (!snapshot.empty) {
+              const oldDoc = snapshot.docs[0];
+              const oldData = oldDoc.data() as Profile;
+              profileData = {
+                ...oldData,
+                id: user.uid
+              };
+              await setDoc(doc(db, "profiles", user.uid), profileData);
+              if (oldDoc.id !== user.uid) {
+                try {
+                  await deleteDoc(doc(db, "profiles", oldDoc.id));
+                } catch (e) {
+                  console.warn("Could not delete old profile doc during migration:", e);
+                }
               }
             }
           }
         }
-      }
 
-      if (profileData) {
-        const lowercaseEmail = (profileData.email || "").trim().toLowerCase();
-        if (["stuncharles@gmail.com", "hadekunleabdulwally@gmail.com", "oluwatosinayinde.bincom@gmail.com"].includes(lowercaseEmail)) {
-          if (profileData.role !== "admin" || profileData.status !== "admin") {
-            profileData.role = "admin";
-            profileData.status = "admin";
-            await setDoc(doc(db, "profiles", user.uid), profileData);
+        if (profileData) {
+          const lowercaseEmail = (profileData.email || "").trim().toLowerCase();
+          if (["stuncharles@gmail.com", "hadekunleabdulwally@gmail.com", "oluwatosinayinde.bincom@gmail.com"].includes(lowercaseEmail)) {
+            if (profileData.role !== "admin" || profileData.status !== "admin") {
+              profileData.role = "admin";
+              profileData.status = "admin";
+              await setDoc(doc(db, "profiles", user.uid), profileData);
+            }
           }
+          onUserLoaded(profileData);
+        } else {
+          // Fallback or create minimal profile
+          const isEmailAdmin = ["stuncharles@gmail.com", "hadekunleabdulwally@gmail.com", "oluwatosinayinde.bincom@gmail.com"].includes((user.email || "").trim().toLowerCase());
+          const newProfile: Profile = {
+            id: user.uid,
+            email: user.email || "",
+            username: (user.email || "").split("@")[0].toLowerCase(),
+            fullName: user.displayName || (user.email || "").split("@")[0],
+            education: "",
+            occupation: "",
+            techExperience: "Beginner",
+            track: "All",
+            role: isEmailAdmin ? "admin" : "user",
+            status: isEmailAdmin ? "admin" : "onboarding",
+            joinedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, "profiles", user.uid), newProfile);
+          onUserLoaded(newProfile);
         }
-        onUserLoaded(profileData);
-      } else {
-        // Fallback or create minimal profile
+      } catch (err: any) {
+        console.warn("Firestore error in listenToAuthChanges, loading offline fallback profile:", err);
         const isEmailAdmin = ["stuncharles@gmail.com", "hadekunleabdulwally@gmail.com", "oluwatosinayinde.bincom@gmail.com"].includes((user.email || "").trim().toLowerCase());
-        const newProfile: Profile = {
+        const fallbackProfile: Profile = {
           id: user.uid,
           email: user.email || "",
           username: (user.email || "").split("@")[0].toLowerCase(),
@@ -210,11 +239,10 @@ export const listenToAuthChanges = (onUserLoaded: (profile: Profile | null) => v
           techExperience: "Beginner",
           track: "All",
           role: isEmailAdmin ? "admin" : "user",
-          status: isEmailAdmin ? "admin" : "onboarding",
+          status: isEmailAdmin ? "admin" : "dashboard",
           joinedAt: new Date().toISOString()
         };
-        await setDoc(doc(db, "profiles", user.uid), newProfile);
-        onUserLoaded(newProfile);
+        onUserLoaded(fallbackProfile);
       }
     } else {
       onUserLoaded(null);
@@ -223,11 +251,247 @@ export const listenToAuthChanges = (onUserLoaded: (profile: Profile | null) => v
 };
 
 // --- Realtime Database Sync Engine ---
+export const isUserEligibleForMeetingInBackend = (user: any, meeting: any, assignments: any[]): boolean => {
+  if (user.role === "admin") return false;
+
+  // 1. Explicitly assigned
+  const isAssigned = assignments.some(
+    (ma: any) => ma.meetingId === meeting.id && ma.userId === user.id
+  );
+  if (isAssigned) return true;
+
+  // 2. User Level & Track Eligibility
+  const userLevelValue = user.learningLevel || user.techExperience || "Apprentice level 1";
+  const userTrackValue = user.track || "";
+
+  const targetTracks = meeting.targetTeamTrackEligibility || [];
+  const isGlobalTrack = !targetTracks || targetTracks.length === 0 || targetTracks.includes("All") || targetTracks.includes("All Tracks Eligibility");
+  const rawLevels = meeting.userLevels || meeting.trackId || [];
+  const isGlobalLevel = !rawLevels || (Array.isArray(rawLevels) && rawLevels.length === 0) || rawLevels.includes("All") || rawLevels.includes("All User Eligible") || rawLevels.includes("All User Level");
+  const isGlobal = isGlobalTrack && isGlobalLevel;
+
+  if (isGlobal) return true;
+
+  const trackMatch = (() => {
+    if (userTrackValue.trim().toLowerCase() === "all") return true;
+    if (!targetTracks || targetTracks.length === 0) return true;
+    return targetTracks.some((t: string) => {
+      const mt = t.trim().toLowerCase();
+      const ut = userTrackValue.trim().toLowerCase();
+      return mt === ut || mt === "all" || mt.includes(ut) || ut.includes(mt);
+    });
+  })();
+
+  const levelMatch = (() => {
+    if (!rawLevels || rawLevels.length === 0) return true;
+    const levelsArr = Array.isArray(rawLevels) ? rawLevels : [rawLevels];
+    return levelsArr.some((l: string) => {
+      const mLevel = l.trim().toLowerCase();
+      const uL = userLevelValue.trim().toLowerCase();
+      return mLevel === uL || mLevel.includes(uL) || uL.includes(mLevel);
+    });
+  })();
+
+  if (!isGlobalTrack && !isGlobalLevel) {
+    return trackMatch && levelMatch;
+  } else if (!isGlobalTrack) {
+    return trackMatch;
+  } else {
+    return levelMatch;
+  }
+};
+
+export const formatMinutesToMeetingTime = (totalMinutes: number): string => {
+  let hours = Math.floor(totalMinutes / 60) % 24;
+  const minutes = totalMinutes % 60;
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  const mmStr = String(minutes).padStart(2, "0");
+  return `${hours}:${mmStr} ${ampm}`;
+};
+
+export const autoArchiveCompletedMeetings = async (
+  meetings: any[],
+  profiles: any[] = [],
+  attendance: any[] = [],
+  assignments: any[] = [],
+  meetingHistory: any[] = []
+): Promise<void> => {
+  if (!meetings || meetings.length === 0) return;
+  if (!profiles || profiles.length === 0) return; // Wait until profiles have resolved to prevent marking everyone missed prematurely
+
+  const now = new Date();
+  const todayStr = getLagosDateString(now);
+  const currentMinutes = getLagosMinutesPastMidnight(now);
+
+  // We check which meetings are considered "overdue" (passed scheduled time)
+  const overdueMeetings = meetings.filter((m) => {
+    const statusLower = String(m.status || "").trim().toLowerCase();
+    if (statusLower === "completed" || statusLower === "archived") return false;
+
+    const dates: string[] = [];
+    if (m.occurrenceDate) {
+      dates.push(m.occurrenceDate);
+    }
+    if (m.meetingDates && Array.isArray(m.meetingDates)) {
+      m.meetingDates.forEach((d: string) => {
+        if (d && !dates.includes(d)) dates.push(d);
+      });
+    }
+
+    if (dates.length > 0) {
+      const latestDate = dates.reduce((latest, current) => current > latest ? current : latest, dates[0]);
+      if (latestDate < todayStr) {
+        return true;
+      }
+      if (latestDate === todayStr) {
+        const scheduledTimeStr = m.timeString || m.time || "09:00 AM";
+        const scheduledMinutes = parseMeetingTimeToMinutes(scheduledTimeStr);
+        const durationStr = m.duration || "30 minutes";
+        const matchDuration = durationStr.match(/(\d+)/);
+        const durationMinutes = matchDuration ? parseInt(matchDuration[1], 10) : 30;
+        const endTimeMinutes = scheduledMinutes + durationMinutes;
+        if (currentMinutes >= endTimeMinutes) {
+          return true;
+        }
+      }
+    }
+    return false;
+  });
+
+  const completedOrArchived = meetings.filter(m => {
+    const s = String(m.status || "").trim().toLowerCase();
+    return s === "completed" || s === "archived";
+  });
+
+  if (overdueMeetings.length === 0 && completedOrArchived.length === 0) {
+    return;
+  }
+
+  const existingHistIds = new Set(meetingHistory.map(h => h.id));
+
+  const meetingsToProcess: any[] = [];
+
+  overdueMeetings.forEach(m => {
+    meetingsToProcess.push({ meeting: m, shouldUpdateStatus: true });
+  });
+
+  completedOrArchived.forEach(m => {
+    const occurrenceDate = m.occurrenceDate || (m.meetingDates && m.meetingDates[0]) || todayStr;
+    const historyId = `m-hist-${m.id}-${occurrenceDate}`;
+    if (!existingHistIds.has(historyId)) {
+      meetingsToProcess.push({ meeting: m, shouldUpdateStatus: false });
+    }
+  });
+
+  if (meetingsToProcess.length === 0) {
+    return;
+  }
+
+  console.log(`Processing ${meetingsToProcess.length} completed/archived meetings for history/attendance preservation...`);
+
+  const batch = writeBatch(db);
+
+  meetingsToProcess.forEach(({ meeting: m, shouldUpdateStatus }) => {
+    if (shouldUpdateStatus) {
+      const docRef = doc(db, "meetings", m.id);
+      batch.update(docRef, { status: "Completed" });
+    }
+
+    const occurrenceDate = m.occurrenceDate || (m.meetingDates && m.meetingDates[0]) || todayStr;
+    const historyId = `m-hist-${m.id}-${occurrenceDate}`;
+
+    const scheduledTimeStr = m.timeString || m.time || "09:00 AM";
+    const scheduledMinutes = parseMeetingTimeToMinutes(scheduledTimeStr);
+    const durationStr = m.duration || "30 minutes";
+    const matchDuration = durationStr.match(/(\d+)/);
+    const durationMinutes = matchDuration ? parseInt(matchDuration[1], 10) : 30;
+    const endTimeMinutes = scheduledMinutes + durationMinutes;
+    const scheduledEndTimeStr = formatMinutesToMeetingTime(endTimeMinutes);
+
+    const historyData: MeetingHistoryRecord = {
+      id: historyId,
+      meetingId: m.id,
+      title: m.title,
+      type: m.type,
+      date: occurrenceDate,
+      scheduledStartTime: scheduledTimeStr,
+      scheduledEndTime: scheduledEndTimeStr,
+      duration: durationStr,
+      organizer: m.organizer || "Admin Team",
+      userLevels: m.userLevels || m.trackId || [],
+      targetTeamTrackEligibility: m.targetTeamTrackEligibility || []
+    };
+
+    batch.set(doc(db, "meetingHistory", historyId), historyData, { merge: true });
+
+    const eligibleUsers = profiles.filter(u => isUserEligibleForMeetingInBackend(u, m, assignments));
+    
+    eligibleUsers.forEach(user => {
+      const hasAttendance = attendance.some(a => {
+        const isSameMeeting = a.meetingId === m.id;
+        const recordDate = a.timestamp ? a.timestamp.substring(0, 10) : "";
+        const isSameDate = recordDate === occurrenceDate || a.meetingDate === occurrenceDate;
+        return isSameMeeting && isSameDate && a.userId === user.id;
+      });
+
+      if (!hasAttendance) {
+        const missedRecordId = `att_missed_${m.id}_${user.id}_${occurrenceDate}`;
+        const missedRecord = {
+          id: missedRecordId,
+          userId: user.id,
+          username: user.username || "",
+          fullName: user.fullName || "",
+          meetingId: m.id,
+          meetingTitle: m.title,
+          meetingType: m.type,
+          timestamp: new Date(`${occurrenceDate}T12:00:00Z`).toISOString(),
+          status: "Missed",
+          track: user.track || "General",
+          meetingDate: occurrenceDate
+        };
+        batch.set(doc(db, "attendance", missedRecordId), missedRecord, { merge: true });
+      }
+    });
+  });
+
+  await batch.commit();
+};
+
+export const synchronizeMeetings = async (): Promise<{ added: string[]; updated: string[] }> => {
+  const { EXTERNAL_MEETINGS_POOL } = await import("./data/externalMeetings");
+  const added: string[] = [];
+  const updated: string[] = [];
+
+  for (const m of EXTERNAL_MEETINGS_POOL) {
+    const docRef = doc(db, "meetings", m.id);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      updated.push(m.title);
+    } else {
+      added.push(m.title);
+    }
+    const todayStr = getLagosDateString(new Date());
+    const todayDayName = getLagosDayOfWeek(new Date());
+    const hasTodayDate = m.meetingDates && m.meetingDates.includes(todayStr);
+    const hasTodayDay = m.scheduleDays && m.scheduleDays.includes(todayDayName);
+    const isActive = hasTodayDate || hasTodayDay;
+
+    await setDoc(docRef, { ...m, isActive }, { merge: true });
+  }
+
+  await syncMeetingAssignmentsForMeetings(EXTERNAL_MEETINGS_POOL);
+
+  return { added, updated };
+};
+
 export const subscribeToAllState = (
   userId: string, 
   userProfile: Profile | null, 
   onStateUpdated: (state: any) => void
 ) => {
+  const loadedCollections = new Set<string>();
   const state: any = {
     profiles: [],
     meetings: [],
@@ -249,7 +513,8 @@ export const subscribeToAllState = (
     attendanceAuditLogs: [],
     tasks: [],
     microservices: [],
-    careerPathways: null
+    careerPathways: null,
+    autoMidnightSyncEnabled: false
   };
 
   const collectionsToListen = [
@@ -298,6 +563,7 @@ export const subscribeToAllState = (
     }
 
     return onSnapshot(queryRef, (snapshot) => {
+      loadedCollections.add(colName);
       const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       
       if (colName === "metadata") {
@@ -309,6 +575,7 @@ export const subscribeToAllState = (
           state.tasks = appConfig.tasks || [];
           state.microservices = appConfig.microservices || [];
           state.careerPathways = appConfig.careerPathways || null;
+          state.autoMidnightSyncEnabled = appConfig.autoMidnightSyncEnabled !== undefined ? appConfig.autoMidnightSyncEnabled : false;
         }
       } else {
         state[colName] = docs;
@@ -365,7 +632,7 @@ export const subscribeToAllState = (
     // Apply eligibility filters for trainee users
     if (!isAdmin) {
       filteredMeetings = filteredMeetings.filter((m: any) => {
-        if (m.status && m.status.trim().toLowerCase() === "archived") {
+        if (m.status && (m.status.trim().toLowerCase() === "archived" || m.status.trim().toLowerCase() === "completed")) {
           return false;
         }
         const isScheduledForToday = (() => {
@@ -529,7 +796,47 @@ export const subscribeToAllState = (
     onStateUpdated(compiled);
   };
 
+  let lastSyncDateString = "";
+  const checkInterval = setInterval(() => {
+    const isAdmin = userProfile?.role === "admin";
+    const required = ["meetings", "profiles", "attendance", "meetingAssignments", "meetingHistory"];
+    const allLoaded = required.every(col => loadedCollections.has(col));
+
+    if (isAdmin && allLoaded && state.meetings && state.meetings.length > 0) {
+      autoArchiveCompletedMeetings(
+        state.meetings,
+        state.profiles,
+        state.attendance,
+        state.meetingAssignments,
+        state.meetingHistory
+      ).catch((e) => console.error("Periodic auto-archive error:", e));
+    }
+
+    if (state.autoMidnightSyncEnabled) {
+      const now = new Date();
+      try {
+        const currentLagosTime = new Intl.DateTimeFormat("en-US", {
+          timeZone: "Africa/Lagos",
+          hour: "numeric",
+          minute: "numeric",
+          hour12: false
+        }).format(now);
+
+        const todayStr = getLagosDateString(now);
+
+        if ((currentLagosTime === "00:00" || currentLagosTime === "00:01") && lastSyncDateString !== todayStr) {
+          lastSyncDateString = todayStr;
+          console.log("⏱️ Automatic midnight sync triggered!");
+          synchronizeMeetings().catch(e => console.error("Error running auto-sync meetings:", e));
+        }
+      } catch (e) {
+        console.error("Error in automated midnight sync interval check:", e);
+      }
+    }
+  }, 30000);
+
   return () => {
+    clearInterval(checkInterval);
     unsubscribes.forEach(unsub => unsub());
   };
 };
@@ -726,6 +1033,136 @@ export const dismissAllReminders = async (userId: string): Promise<void> => {
   await batch.commit();
 };
 
+export const deleteMeetingAssignmentsForMeetings = async (meetingIds: string[]): Promise<void> => {
+  if (!meetingIds || meetingIds.length === 0) return;
+
+  const chunkSize = 30;
+  const chunks = [];
+  for (let i = 0; i < meetingIds.length; i += chunkSize) {
+    chunks.push(meetingIds.slice(i, i + chunkSize));
+  }
+
+  for (const chunk of chunks) {
+    const q = query(
+      collection(db, "meetingAssignments"),
+      where("meetingId", "in", chunk)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      let batch = writeBatch(db);
+      let count = 0;
+      for (const docSnap of snap.docs) {
+        batch.delete(docSnap.ref);
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) {
+        await batch.commit();
+      }
+    }
+  }
+};
+
+export const syncMeetingAssignmentsForMeetings = async (meetingsToSync: any[]): Promise<void> => {
+  if (!meetingsToSync || meetingsToSync.length === 0) return;
+
+  const meetingIds = meetingsToSync.map(m => m.id);
+  await deleteMeetingAssignmentsForMeetings(meetingIds);
+
+  const profilesSnap = await getDocs(collection(db, "profiles"));
+  const activeProfiles = profilesSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Profile[];
+
+  let batch = writeBatch(db);
+  let batchCount = 0;
+  const writeBatchSize = 400;
+
+  for (const meeting of meetingsToSync) {
+    for (const profile of activeProfiles) {
+      const targetTracks = meeting.targetTeamTrackEligibility;
+      const isGlobalTrack = !targetTracks || (Array.isArray(targetTracks) && targetTracks.length === 0);
+      const userTrack = profile.track || "";
+      const isTrackMatch = profile.role === "admin" || isGlobalTrack || (Array.isArray(targetTracks) && targetTracks.some(
+        (t: string) => t.trim().toLowerCase() === userTrack.trim().toLowerCase() || userTrack.trim().toLowerCase() === "all"
+      ));
+
+      const rawLevels = meeting.userLevels !== undefined ? meeting.userLevels : meeting.trackId;
+      const isGlobalLevel = !rawLevels || (Array.isArray(rawLevels) && rawLevels.length === 0) || rawLevels === "All" || rawLevels === "";
+      const userLevel = profile.learningLevel || profile.techExperience || "Apprentice level 1";
+      
+      let isLevelMatch = false;
+      if (profile.role === "admin") {
+        isLevelMatch = true;
+      } else if (isGlobalLevel) {
+        isLevelMatch = true;
+      } else if (Array.isArray(rawLevels)) {
+        const filtered = rawLevels.filter(l => l && l !== "All User Eligible" && l !== "All User Level" && l !== "All Tracks Eligibility");
+        if (filtered.length === 0) {
+          isLevelMatch = true;
+        } else {
+          isLevelMatch = filtered.some((l: string) => {
+            const mLevel = l.trim().toLowerCase();
+            const uLevel = userLevel.trim().toLowerCase();
+            return mLevel === uLevel || mLevel.includes(uLevel) || uLevel.includes(mLevel);
+          });
+        }
+      } else {
+        const mLevel = String(rawLevels).trim().toLowerCase();
+        const uLevel = userLevel.trim().toLowerCase();
+        isLevelMatch = mLevel === uLevel || mLevel.includes(uLevel) || uLevel.includes(mLevel);
+      }
+
+      const teamTrackSpecified = !isGlobalTrack;
+      const userLevelSpecified = !isGlobalLevel;
+
+      let eligible = false;
+      const hasDirectAssignments = meeting.assignedUserIds && Array.isArray(meeting.assignedUserIds) && meeting.assignedUserIds.length > 0;
+
+      const isDirectAssigned = hasDirectAssignments && meeting.assignedUserIds.includes(profile.id);
+
+      if (hasDirectAssignments) {
+        eligible = isDirectAssigned;
+      } else {
+        if (teamTrackSpecified && userLevelSpecified) {
+          eligible = isTrackMatch && isLevelMatch;
+        } else if (teamTrackSpecified) {
+          eligible = isTrackMatch;
+        } else if (userLevelSpecified) {
+          eligible = isLevelMatch;
+        } else {
+          eligible = true;
+        }
+      }
+
+      if (eligible) {
+        const assignmentId = `asg_${meeting.id}_${profile.id}`;
+        batch.set(doc(db, "meetingAssignments", assignmentId), {
+          id: assignmentId,
+          meetingId: meeting.id,
+          userId: profile.id,
+          username: profile.username || "",
+          fullName: profile.fullName || "",
+          assignedAt: new Date().toISOString()
+        });
+
+        batchCount++;
+        if (batchCount >= writeBatchSize) {
+          await batch.commit();
+          batch = writeBatch(db);
+          batchCount = 0;
+        }
+      }
+    }
+  }
+
+  if (batchCount > 0) {
+    await batch.commit();
+  }
+};
+
 export const syncMeetingAssignments = async (): Promise<void> => {
   const profilesSnap = await getDocs(collection(db, "profiles"));
   const meetingsSnap = await getDocs(collection(db, "meetings"));
@@ -827,28 +1264,235 @@ export const syncMeetingAssignments = async (): Promise<void> => {
   }
 };
 
+export function generateRecurrenceDates(params: {
+  frequency: string;
+  startDate: string;
+  endDate?: string;
+  customInterval?: number;
+}): string[] {
+  const dates: string[] = [];
+  const start = new Date(params.startDate);
+  
+  let end: Date;
+  if (params.endDate && params.endDate !== "No End Date") {
+    end = new Date(params.endDate);
+  } else {
+    // Default to 90 days if no end date
+    end = new Date(start.getTime() + 90 * 24 * 60 * 60 * 1000);
+  }
+
+  if (end < start) return [params.startDate];
+
+  const current = new Date(start);
+  while (current <= end) {
+    const yyyy = current.getFullYear();
+    const mm = String(current.getMonth() + 1).padStart(2, '0');
+    const dd = String(current.getDate()).padStart(2, '0');
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+
+    if (params.frequency === "daily") {
+      dates.push(dateStr);
+      current.setDate(current.getDate() + 1);
+    } else if (params.frequency === "weekdays") {
+      const day = current.getDay();
+      if (day !== 0 && day !== 6) {
+        dates.push(dateStr);
+      }
+      current.setDate(current.getDate() + 1);
+    } else if (params.frequency === "weekly") {
+      dates.push(dateStr);
+      current.setDate(current.getDate() + 7);
+    } else if (params.frequency === "monthly") {
+      dates.push(dateStr);
+      current.setMonth(current.getMonth() + 1);
+    } else if (params.frequency === "custom") {
+      dates.push(dateStr);
+      const interval = params.customInterval || 1;
+      current.setDate(current.getDate() + interval);
+    } else {
+      // one-time
+      dates.push(dateStr);
+      break;
+    }
+  }
+  return dates;
+}
+
 export const saveMeeting = async (meetingData: any): Promise<void> => {
   const cleanData = { ...meetingData };
-  delete cleanData.id;
-  const meetingId = meetingData.id || `meet-${Date.now()}`;
-  
+  // Sanitize undefined fields to prevent Firestore setDoc/updateDoc errors
+  Object.keys(cleanData).forEach(key => {
+    if (cleanData[key] === undefined) {
+      delete cleanData[key];
+    }
+  });
+  const editMode = cleanData.recurrenceEditMode || "single";
+  delete cleanData.recurrenceEditMode;
+
   const todayStr = getLagosDateString(new Date());
   const todayDayName = getLagosDayOfWeek(new Date());
+
+  // Check if it's a recurring meeting being newly scheduled
+  if (cleanData.isRecurring && !cleanData.id) {
+    const seriesId = `series-${Date.now()}`;
+    const frequency = cleanData.recurrenceFrequency || "one-time";
+    const startDate = cleanData.recurrenceStartDate || todayStr;
+    const endDate = cleanData.recurrenceEndDate || "";
+    const customInterval = cleanData.recurrenceCustomInterval || 1;
+
+    const dates = generateRecurrenceDates({
+      frequency,
+      startDate,
+      endDate: endDate === "No End Date" ? "" : endDate,
+      customInterval
+    });
+
+    const batch = writeBatch(db);
+    const occurrencesToSync: any[] = [];
+    dates.forEach((dateStr) => {
+      const occurrenceId = `meet-${seriesId}-${dateStr}`;
+      const hasTodayDate = dateStr === todayStr;
+      const hasTodayDay = cleanData.scheduleDays && cleanData.scheduleDays.includes(todayDayName);
+      
+      const occurrenceData = {
+        ...cleanData,
+        id: occurrenceId,
+        seriesId,
+        occurrenceDate: dateStr,
+        meetingDates: [dateStr],
+        isActive: hasTodayDate || hasTodayDay,
+        recurrenceFrequency: frequency,
+        recurrenceStartDate: startDate,
+        recurrenceEndDate: endDate,
+        recurrenceCustomInterval: customInterval
+      };
+      
+      batch.set(doc(db, "meetings", occurrenceId), occurrenceData, { merge: true });
+      occurrencesToSync.push(occurrenceData);
+    });
+
+    await batch.commit();
+    await syncMeetingAssignmentsForMeetings(occurrencesToSync);
+    return;
+  }
+
+  // Check if editing an existing series
+  if (cleanData.id && cleanData.seriesId) {
+    const currentId = cleanData.id;
+    const currentSeriesId = cleanData.seriesId;
+    const currentOccurrenceDate = cleanData.occurrenceDate || todayStr;
+
+    delete cleanData.id; // remove id to prevent overwriting other docs' ids
+
+    if (editMode === "single") {
+      // Update only this specific occurrence
+      cleanData.isActive = (cleanData.meetingDates || []).includes(todayStr) || (cleanData.scheduleDays || []).includes(todayDayName);
+      const updatedData = {
+        ...cleanData,
+        id: currentId
+      };
+      await setDoc(doc(db, "meetings", currentId), updatedData, { merge: true });
+      await syncMeetingAssignmentsForMeetings([updatedData]);
+    } else {
+      // Find occurrences to update
+      const q = query(
+        collection(db, "meetings"),
+        where("seriesId", "==", currentSeriesId)
+      );
+
+      const snapshot = await getDocs(q);
+      const docsToUpdate = editMode === "future"
+        ? snapshot.docs.filter((d) => {
+            const dData = d.data() as any;
+            const dateStr = dData.occurrenceDate || todayStr;
+            return dateStr >= currentOccurrenceDate;
+          })
+        : snapshot.docs;
+
+      const batch = writeBatch(db);
+      const occurrencesToSync: any[] = [];
+
+      docsToUpdate.forEach((d) => {
+        const dData = d.data() as any;
+        const dateStr = dData.occurrenceDate || todayStr;
+        const hasTodayDate = dateStr === todayStr;
+        const hasTodayDay = cleanData.scheduleDays && cleanData.scheduleDays.includes(todayDayName);
+
+        const updatedData = {
+          ...cleanData,
+          id: d.id,
+          seriesId: currentSeriesId,
+          occurrenceDate: dateStr,
+          meetingDates: [dateStr],
+          isActive: hasTodayDate || hasTodayDay
+        };
+
+        batch.set(d.ref, updatedData, { merge: true });
+        occurrencesToSync.push(updatedData);
+      });
+
+      await batch.commit();
+      await syncMeetingAssignmentsForMeetings(occurrencesToSync);
+    }
+
+    return;
+  }
+
+  // Default behavior (normal one-time meeting create/edit)
+  delete cleanData.id;
+  const meetingId = meetingData.id || `meet-${Date.now()}`;
   const finalMeetingDates = cleanData.meetingDates || [todayStr];
   const finalScheduleDays = cleanData.scheduleDays || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
   cleanData.isActive = finalMeetingDates.includes(todayStr) || finalScheduleDays.includes(todayDayName);
 
-  await setDoc(doc(db, "meetings", meetingId), {
+  const updatedData = {
     ...cleanData,
     id: meetingId
-  }, { merge: true });
+  };
+  await setDoc(doc(db, "meetings", meetingId), updatedData, { merge: true });
 
-  await syncMeetingAssignments();
+  await syncMeetingAssignmentsForMeetings([updatedData]);
 };
 
-export const deleteMeeting = async (meetingId: string): Promise<void> => {
-  await deleteDoc(doc(db, "meetings", meetingId));
-  await syncMeetingAssignments();
+export const deleteMeeting = async (meetingId: string, deleteMode: "single" | "future" | "all" = "single"): Promise<void> => {
+  const deletedIds: string[] = [];
+  if (deleteMode === "single") {
+    await deleteDoc(doc(db, "meetings", meetingId));
+    deletedIds.push(meetingId);
+  } else {
+    // Fetch the meeting to get seriesId and occurrenceDate
+    const meetDoc = await getDoc(doc(db, "meetings", meetingId));
+    if (meetDoc.exists()) {
+      const meetData = meetDoc.data() as any;
+      const seriesId = meetData.seriesId;
+      const occurrenceDate = meetData.occurrenceDate;
+      if (seriesId) {
+        const q = query(
+          collection(db, "meetings"),
+          where("seriesId", "==", seriesId)
+        );
+        const snapshot = await getDocs(q);
+        const docsToDelete = deleteMode === "future"
+          ? snapshot.docs.filter((d) => {
+              const dData = d.data() as any;
+              const dateStr = dData.occurrenceDate || "";
+              return dateStr >= occurrenceDate;
+            })
+          : snapshot.docs;
+
+        const batch = writeBatch(db);
+        docsToDelete.forEach((d) => {
+          batch.delete(d.ref);
+          deletedIds.push(d.id);
+        });
+        await batch.commit();
+      } else {
+        await deleteDoc(doc(db, "meetings", meetingId));
+        deletedIds.push(meetingId);
+      }
+    }
+  }
+  await deleteMeetingAssignmentsForMeetings(deletedIds);
 };
 
 export const submitStandup = async (standupData: any): Promise<void> => {
@@ -915,9 +1559,40 @@ export const updateAttendance = async (recordId: string, status: string): Promis
 
 export const joinMeetingAttendance = async (userId: string, meetingId: string): Promise<string> => {
   // First fetch the meeting
+  let meeting: Meeting | null = null;
   const meetingDoc = await getDoc(doc(db, "meetings", meetingId));
-  if (!meetingDoc.exists()) throw new Error("Meeting not found");
-  const meeting = meetingDoc.data() as Meeting;
+  
+  if (meetingDoc.exists()) {
+    meeting = meetingDoc.data() as Meeting;
+  } else {
+    // Check if it's a project team sync meeting in the "projects" collection
+    const projectsSnap = await getDocs(collection(db, "projects"));
+    for (const pDoc of projectsSnap.docs) {
+      const pData = pDoc.data();
+      if (pData.meetings && Array.isArray(pData.meetings)) {
+        const found = pData.meetings.find((m: any) => m.id === meetingId);
+        if (found) {
+          meeting = {
+            id: found.id,
+            title: found.title,
+            type: "project",
+            timeString: found.time || "02:00 PM",
+            trackId: pData.trackId || "All",
+            jitsiUrl: found.jitsiUrl || found.link || "",
+            projectId: pDoc.id,
+            scheduleDays: found.scheduleDays || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+            duration: found.duration || "45 minutes",
+            organizer: found.organizer || "Project Manager",
+            status: found.status || "Upcoming",
+            description: found.description || found.title
+          } as Meeting;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!meeting) throw new Error("Meeting not found");
 
   const profileDoc = await getDoc(doc(db, "profiles", userId));
   if (!profileDoc.exists()) throw new Error("User profile not found");

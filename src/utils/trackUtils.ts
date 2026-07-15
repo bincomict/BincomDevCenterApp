@@ -318,7 +318,7 @@ export const shouldShowMeetingOnDashboard = (
 
   // If showAllScheduled is true (e.g. for the general meetings hub), we don't enforce current day/time filters
   if (showAllScheduled) {
-    if (meeting.status && meeting.status.trim().toLowerCase() === "archived") {
+    if (meeting.status && (meeting.status.trim().toLowerCase() === "archived" || meeting.status.trim().toLowerCase() === "completed")) {
       return false;
     }
     return true;
@@ -329,8 +329,8 @@ export const shouldShowMeetingOnDashboard = (
     return false;
   }
 
-  // Check if meeting is active/archived
-  if (meeting.status && meeting.status.trim().toLowerCase() === "archived") {
+  // Check if meeting is active/archived/completed
+  if (meeting.status && (meeting.status.trim().toLowerCase() === "archived" || meeting.status.trim().toLowerCase() === "completed")) {
     return false;
   }
 
