@@ -20,7 +20,8 @@ import {
   triggerSimulatedCron,
   assignMicroserviceOwner,
   assignKDCount,
-  updateAppConfigField
+  updateAppConfigField,
+  isUserEligibleForMeetingInBackend
 } from "../firebaseService";
 import { toast } from "./Toast";
 import {
@@ -50,7 +51,10 @@ import {
   GraduationCap,
   Laptop,
   Compass,
-  Sparkles
+  Sparkles,
+  ArrowUp,
+  ArrowDown,
+  RefreshCw
 } from "lucide-react";
 import AttendanceHistoryTab from "./AttendanceHistoryTab";
 
@@ -420,6 +424,15 @@ export default function AdminPanel({
   const [allowPastDates, setAllowPastDates] = useState(false);
   const [isAddingMeeting, setIsAddingMeeting] = useState(false);
 
+  // Recurrence states
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState("one-time");
+  const [recurrenceStartDate, setRecurrenceStartDate] = useState("");
+  const [recurrenceEndDate, setRecurrenceEndDate] = useState("");
+  const [recurrenceCustomInterval, setRecurrenceCustomInterval] = useState(1);
+  const [recurrenceEditMode, setRecurrenceEditMode] = useState<"single" | "future" | "all">("single");
+  const [deleteRecurrenceOption, setDeleteRecurrenceOption] = useState<"single" | "future" | "all">("single");
+
   // Custom Meeting specifications states
   const [meetingDuration, setMeetingDuration] = useState("60 minutes");
   const [meetingOrganizer, setMeetingOrganizer] = useState("Admin Team");
@@ -429,6 +442,14 @@ export default function AdminPanel({
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [userSearchText, setUserSearchText] = useState("");
   const assignedUsersRef = useRef<HTMLDivElement>(null);
+
+  // Archived / Completed meetings search & filter states
+  const [archiveSearchText, setArchiveSearchText] = useState("");
+  const [archiveDateFilter, setArchiveDateFilter] = useState("");
+  const [archiveTypeFilter, setArchiveTypeFilter] = useState("");
+  const [archiveOrganizerFilter, setArchiveOrganizerFilter] = useState("");
+  const [isArchiveRepoExpanded, setIsArchiveRepoExpanded] = useState(false);
+  const [expandedSeriesIds, setExpandedSeriesIds] = useState<Record<string, boolean>>({});
 
   // Combobox dropdown state managers
   const [comboboxOpen, setComboboxOpen] = useState(false);
@@ -461,6 +482,12 @@ export default function AdminPanel({
     }, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (adminProfile?.fullName && meetingOrganizer === "Admin Team") {
+      setMeetingOrganizer(adminProfile.fullName);
+    }
+  }, [adminProfile, meetingOrganizer]);
 
   const todayDateStr = getLagosDateString(currentDateState);
   const todayDayName = (() => {
@@ -725,6 +752,8 @@ export default function AdminPanel({
   // Cron logs simulation state
   const [cronLogs, setCronLogs] = useState<string[]>([]);
   const [cronRunning, setCronRunning] = useState(false);
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [syncLogs, setSyncLogs] = useState<string[]>([]);
 
   // CSV table toggle/preview
   const [csvPreview, setCsvPreview] = useState(false);
@@ -983,13 +1012,21 @@ export default function AdminPanel({
       triggerError("Meeting Type is required.");
       return;
     }
-    if (!meetingDates || meetingDates.length === 0) {
+
+    // Resolve dates for saving
+    let finalMeetingDates = meetingDates;
+    if (isRecurring && !editingMeetingId) {
+      const startD = recurrenceStartDate || getLagosDateString(new Date());
+      finalMeetingDates = [startD];
+    }
+
+    if (!finalMeetingDates || finalMeetingDates.length === 0) {
       triggerError("Please select at least one calendar date for the meeting.");
       return;
     }
     if (!allowPastDates) {
       const todayStr = getLagosDateString(new Date());
-      const hasPastDate = meetingDates.some(dateStr => dateStr < todayStr);
+      const hasPastDate = finalMeetingDates.some(dateStr => dateStr < todayStr);
       if (hasPastDate) {
         triggerError("Cannot select past dates unless 'Allow Past Dates' is explicitly enabled in system settings.");
         return;
@@ -1008,12 +1045,21 @@ export default function AdminPanel({
         targetTeamTrackEligibility:
           meetingTeamTracks.length > 0 ? meetingTeamTracks : null,
         scheduleDays: meetingScheduleDays,
-        meetingDates,
+        meetingDates: finalMeetingDates,
         assignedUserIds: meetingAssignedUsers,
         duration: meetingDuration,
         organizer: meetingOrganizer,
         status: meetingStatus,
         description: meetingDescription,
+        // Recurrence parameters
+        isRecurring,
+        recurrenceFrequency: isRecurring ? recurrenceFrequency : undefined,
+        recurrenceStartDate: isRecurring ? recurrenceStartDate : undefined,
+        recurrenceEndDate: isRecurring ? recurrenceEndDate : undefined,
+        recurrenceCustomInterval: isRecurring && recurrenceFrequency === "custom" ? recurrenceCustomInterval : undefined,
+        recurrenceEditMode: editingMeetingId ? recurrenceEditMode : undefined,
+        seriesId: editingMeetingId ? (state.meetings.find((m: any) => m.id === editingMeetingId)?.seriesId || undefined) : undefined,
+        occurrenceDate: editingMeetingId ? (state.meetings.find((m: any) => m.id === editingMeetingId)?.occurrenceDate || undefined) : undefined,
       });
 
       triggerSuccess(
@@ -1045,6 +1091,14 @@ export default function AdminPanel({
       setMeetingAssignedUsers([]);
       setUserSearchText("");
       setIsAddingMeeting(false);
+      // Reset recurrence states
+      setIsRecurring(false);
+      setRecurrenceFrequency("one-time");
+      setRecurrenceStartDate("");
+      setRecurrenceEndDate("");
+      setRecurrenceCustomInterval(1);
+      setRecurrenceEditMode("single");
+
       onStateUpdate();
     } catch (e: any) {
       triggerError("Saving meeting failed: " + e.message);
@@ -1054,11 +1108,11 @@ export default function AdminPanel({
   };
 
   // Delete scheduled Meeting
-  const handleDeleteMeeting = async (meetingId: string) => {
+  const handleDeleteMeeting = async (meetingId: string, deleteMode: "single" | "future" | "all" = "single") => {
     setIsDeletingMeeting(true);
-    console.log(`Initiating delete for meeting ID: ${meetingId}`);
+    console.log(`Initiating delete for meeting ID: ${meetingId} with mode: ${deleteMode}`);
     try {
-      await deleteMeeting(meetingId);
+      await deleteMeeting(meetingId, deleteMode);
 
       triggerSuccess("Meeting deleted successfully.");
       if (meetingId === editingMeetingId) {
@@ -1071,6 +1125,51 @@ export default function AdminPanel({
       triggerError("Meeting deletion failed: " + e.message);
     } finally {
       setIsDeletingMeeting(false);
+    }
+  };
+
+  // Sync Meetings Trigger & Config
+  const handleTriggerSync = async () => {
+    setSyncRunning(true);
+    setSyncLogs([
+      "🔄 Initialising meeting synchronisation engine...",
+      "🌐 Querying Bincom Corporate Meeting Directory pool...",
+    ]);
+
+    setTimeout(async () => {
+      try {
+        const { synchronizeMeetings } = await import("../firebaseService");
+        const result = await synchronizeMeetings();
+
+        setSyncLogs((prev) => [
+          ...prev,
+          `✅ Successfully connected to Corporate Directory.`,
+          `🆕 Newly created meetings fetched & published: ${result.added.length > 0 ? result.added.join(", ") : "None"}`,
+          `🔄 Updated meetings synced & previous info replaced: ${result.updated.length > 0 ? result.updated.join(", ") : "None"}`,
+          `📅 Alignment complete! All target track memberships updated.`,
+        ]);
+        triggerSuccess("Meetings synchronized successfully!");
+        onStateUpdate();
+      } catch (e: any) {
+        setSyncLogs((prev) => [
+          ...prev,
+          "❌ CRITICAL Error synchronising meetings: " + e.message,
+        ]);
+        triggerError("Synchronization failed: " + e.message);
+      } finally {
+        setSyncRunning(false);
+      }
+    }, 1200);
+  };
+
+  const handleToggleMidnightSync = async (enabled: boolean) => {
+    try {
+      const { updateAppConfigField } = await import("../firebaseService");
+      await updateAppConfigField("autoMidnightSyncEnabled", enabled);
+      triggerSuccess(`Midnight Sync successfully ${enabled ? "enabled" : "disabled"}!`);
+      onStateUpdate();
+    } catch (e: any) {
+      triggerError("Failed to update midnight sync setting: " + e.message);
     }
   };
 
@@ -3364,6 +3463,15 @@ export default function AdminPanel({
                   setMeetingDescription("");
                   setMeetingAssignedUsers([]);
                   setUserSearchText("");
+                  
+                  // Reset recurrence states
+                  setIsRecurring(false);
+                  setRecurrenceFrequency("one-time");
+                  setRecurrenceStartDate("");
+                  setRecurrenceEndDate("");
+                  setRecurrenceCustomInterval(1);
+                  setRecurrenceEditMode("single");
+
                   setIsAddingMeeting(!isAddingMeeting);
                 }}
                 className="px-3.5 py-1.5 bg-[#4B5E40] hover:bg-[#3d4d34] text-white text-[11px] font-black rounded-lg cursor-pointer flex items-center gap-1 shadow-2xs"
@@ -3376,6 +3484,7 @@ export default function AdminPanel({
             {/* Scheduler Form */}
             {(isAddingMeeting || editingMeetingId) && (
               <form
+                id="meeting-edit-form-anchor"
                 onSubmit={handleSaveMeeting}
                 className="bg-gray-50/50 p-4 rounded-xl border border-gray-200 animate-zoom-in space-y-4"
               >
@@ -3449,14 +3558,36 @@ export default function AdminPanel({
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">
                       Organizer/Admin Name
                     </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Admin Team, Mentor Joy"
+                    <select
                       value={meetingOrganizer}
                       onChange={(e) => setMeetingOrganizer(e.target.value)}
-                      className="w-full bg-slate-50 border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:bg-white focus:border-[#4B5E40] text-xs font-semibold"
-                    />
+                      className="w-full bg-slate-50 border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:bg-white focus:border-[#4B5E40] text-xs font-semibold cursor-pointer"
+                    >
+                      <option value="Admin Team">Admin Team</option>
+                      <option value="Facilitators">Facilitators</option>
+                      <option value="Track Lead">Track Lead</option>
+                      <option value="External Speaker">External Speaker</option>
+                      {(() => {
+                        const set = new Set<string>();
+                        (state.profiles || []).forEach((p: any) => {
+                          const isAdm = p.role === "admin" ||
+                            String(p.learningLevel || "").toLowerCase() === "admin" ||
+                            String(p.learningLevel || "").toLowerCase() === "mentor" ||
+                            String(p.learningLevel || "").toLowerCase() === "administrative mentor";
+                          const name = String(p.fullName || "").trim();
+                          if (isAdm && name) {
+                            set.add(name);
+                          }
+                        });
+                        return Array.from(set)
+                          .sort((a, b) => a.localeCompare(b))
+                          .map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ));
+                      })()}
+                    </select>
                   </div>
 
                   <div>
@@ -3472,6 +3603,201 @@ export default function AdminPanel({
                     />
                   </div>
                 </div>
+
+                {/* Recurrence Setup Section (NEW Meetings Only) */}
+                {!editingMeetingId && (
+                  <div className="bg-white p-4 rounded-xl border border-gray-200 space-y-3.5 animate-fade-in" id="recurrence-setup-section">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h5 className="font-extrabold text-[11px] uppercase tracking-wider text-slate-700">
+                          🔄 Recurring Meeting Series Settings
+                        </h5>
+                        <p className="text-[10px] text-gray-400 font-medium">
+                          Configure this meeting to repeat automatically over a period of time
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id="is-recurring-toggle"
+                          checked={isRecurring}
+                          onChange={(e) => {
+                            setIsRecurring(e.target.checked);
+                            if (e.target.checked) {
+                              // Auto set a start date if empty
+                              if (!recurrenceStartDate) {
+                                setRecurrenceStartDate(getLagosDateString(new Date()));
+                              }
+                            }
+                          }}
+                          className="rounded border-gray-300 text-[#4B5E40] focus:ring-[#4B5E40] h-4 w-4 cursor-pointer"
+                        />
+                        <label
+                          htmlFor="is-recurring-toggle"
+                          className="text-xs font-extrabold text-gray-700 select-none cursor-pointer"
+                        >
+                          Enable Recurrence
+                        </label>
+                      </div>
+                    </div>
+
+                    {isRecurring && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 bg-gray-50/50 p-3.5 rounded-lg border border-gray-150 animate-fade-in text-xs font-semibold text-gray-700">
+                        <div>
+                          <label className="block text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">
+                            Frequency
+                          </label>
+                          <select
+                            value={recurrenceFrequency}
+                            onChange={(e) => setRecurrenceFrequency(e.target.value)}
+                            className="w-full bg-white border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:border-[#4B5E40] text-xs font-semibold cursor-pointer"
+                          >
+                            <option value="daily">Daily</option>
+                            <option value="weekdays">Weekdays (Mon-Fri)</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                            <option value="custom">Custom Recurrence</option>
+                          </select>
+                        </div>
+
+                        {recurrenceFrequency === "custom" && (
+                          <div>
+                            <label className="block text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">
+                              Every (Days)
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={recurrenceCustomInterval}
+                              onChange={(e) => setRecurrenceCustomInterval(parseInt(e.target.value) || 1)}
+                              className="w-full bg-white border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:border-[#4B5E40] text-xs font-semibold"
+                            />
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="block text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">
+                            Start Date
+                          </label>
+                          <input
+                            type="date"
+                            value={recurrenceStartDate}
+                            onChange={(e) => {
+                              setRecurrenceStartDate(e.target.value);
+                              // Sync meetingDates list automatically with the start date as the first date!
+                              if (e.target.value && !meetingDates.includes(e.target.value)) {
+                                setMeetingDates([e.target.value]);
+                              }
+                            }}
+                            className="w-full bg-white border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:border-[#4B5E40] text-xs font-semibold cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">
+                            End Date Option
+                          </label>
+                          <select
+                            value={recurrenceEndDate ? "specify" : "none"}
+                            onChange={(e) => {
+                              if (e.target.value === "none") {
+                                setRecurrenceEndDate("");
+                              } else {
+                                // Default end date to 30 days out from start date
+                                const d = recurrenceStartDate ? new Date(recurrenceStartDate) : new Date();
+                                d.setDate(d.getDate() + 30);
+                                setRecurrenceEndDate(getLagosDateString(d));
+                              }
+                            }}
+                            className="w-full bg-white border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:border-[#4B5E40] text-xs font-semibold cursor-pointer"
+                          >
+                            <option value="none">No End Date (Auto 90 days)</option>
+                            <option value="specify">Specify End Date</option>
+                          </select>
+                        </div>
+
+                        {recurrenceEndDate && (
+                          <div>
+                            <label className="block text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">
+                              End Date
+                            </label>
+                            <input
+                              type="date"
+                              value={recurrenceEndDate}
+                              onChange={(e) => setRecurrenceEndDate(e.target.value)}
+                              className="w-full bg-white border border-gray-250 rounded-lg px-2.5 py-1.5 outline-none focus:border-[#4B5E40] text-xs font-semibold cursor-pointer"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Recurrence Edit Options Section (EXISTING Meetings Only) */}
+                {editingMeetingId && (() => {
+                  const currentEditingMeeting = state.meetings.find((m: any) => m.id === editingMeetingId);
+                  if (!currentEditingMeeting?.seriesId) return null;
+                  return (
+                    <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-200/60 space-y-3 animate-fade-in" id="recurrence-edit-section">
+                      <div>
+                        <h5 className="font-extrabold text-[11px] uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
+                          🔄 Recurring Series Modification
+                        </h5>
+                        <p className="text-[10px] text-amber-700/80 font-semibold">
+                          This occurrence is part of a recurring series. How should your changes be applied when saved?
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-3 text-xs font-bold text-gray-700">
+                        <label className="flex items-center gap-2 cursor-pointer bg-white p-2.5 rounded-lg border border-gray-200 flex-1 hover:border-[#4B5E40]/40">
+                          <input
+                            type="radio"
+                            name="recurrence-edit-mode"
+                            value="single"
+                            checked={recurrenceEditMode === "single"}
+                            onChange={() => setRecurrenceEditMode("single")}
+                            className="text-[#4B5E40] focus:ring-[#4B5E40] h-4 w-4 cursor-pointer"
+                          />
+                          <div className="flex flex-col">
+                            <span>This occurrence only</span>
+                            <span className="text-[9.5px] text-gray-400 font-normal">Change only this specific meeting record</span>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer bg-white p-2.5 rounded-lg border border-gray-200 flex-1 hover:border-[#4B5E40]/40">
+                          <input
+                            type="radio"
+                            name="recurrence-edit-mode"
+                            value="future"
+                            checked={recurrenceEditMode === "future"}
+                            onChange={() => setRecurrenceEditMode("future")}
+                            className="text-[#4B5E40] focus:ring-[#4B5E40] h-4 w-4 cursor-pointer"
+                          />
+                          <div className="flex flex-col">
+                            <span>This and future occurrences</span>
+                            <span className="text-[9.5px] text-gray-400 font-normal">Apply changes to subsequent meetings</span>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer bg-white p-2.5 rounded-lg border border-gray-200 flex-1 hover:border-[#4B5E40]/40">
+                          <input
+                            type="radio"
+                            name="recurrence-edit-mode"
+                            value="all"
+                            checked={recurrenceEditMode === "all"}
+                            onChange={() => setRecurrenceEditMode("all")}
+                            className="text-[#4B5E40] focus:ring-[#4B5E40] h-4 w-4 cursor-pointer"
+                          />
+                          <div className="flex flex-col">
+                            <span>The entire meeting series</span>
+                            <span className="text-[9.5px] text-gray-400 font-normal">Apply changes to all occurrences in series</span>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Meeting Date Selection Section */}
                 <div
@@ -4365,369 +4691,1390 @@ export default function AdminPanel({
             {/* List of Meetings */}
             <div className="space-y-2.5">
               <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                Currently Programmed & Scheduled Meetings
+                Currently Programmed & Scheduled Meetings (Grouped by Series)
               </h4>
 
-              {state.meetings.filter((m: any) => !m.status || m.status.trim().toLowerCase() !== "archived").length === 0 ? (
-                <div className="py-8 text-center text-gray-450 text-xs font-medium bg-gray-50/50 rounded-xl border border-dashed">
-                  No synchronized meeting tracks configured.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {state.meetings.filter((m: any) => !m.status || m.status.trim().toLowerCase() !== "archived").map((meeting) => (
-                    <div
-                      key={meeting.id}
-                      className="p-3.5 bg-[#F8FAF8] rounded-xl border border-gray-150 flex flex-col justify-between gap-3 text-xs"
-                    >
-                      <div>
-                        <div className="flex justify-between items-start gap-1">
-                          <span className="text-[9.5px] font-bold uppercase text-gray-400 font-mono tracking-wider">
-                            ID: {meeting.id}
-                          </span>
-                          <span
-                            className={`px-2 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide ${
-                              meeting.type === "knowledge" ||
-                              meeting.type.toLowerCase().includes("knowledge")
-                                ? "bg-amber-50 text-amber-700 border-amber-200"
-                                : meeting.type === "standup" ||
-                                    meeting.type === "microservice" ||
-                                    meeting.type
-                                      .toLowerCase()
-                                      .includes("standup")
-                                  ? "bg-teal-50 text-teal-700 border-teal-200"
-                                  : "bg-purple-50 text-purple-700 border-purple-200"
-                            }`}
-                          >
-                            {getMeetingTypeLabel(meeting.type)}
-                          </span>
-                        </div>
-                        <h5 className="font-extrabold text-slate-900 mt-1.5 text-xs sm:text-sm leading-snug">
-                          {meeting.title}
-                        </h5>
+              {(() => {
+                // Group meetings by seriesId
+                const groupedMap: Record<string, any[]> = {};
+                const standaloneActive: any[] = [];
 
-                        <div className="grid grid-cols-1 gap-1 mt-2 text-[11px] text-gray-500 font-medium">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-gray-400">🗓️</span>
-                            <span className="font-bold text-gray-700">
-                              {meeting.timeString}
-                            </span>
-                          </div>
-                          <div className="flex items-start gap-1.5">
-                            <span className="text-gray-400 mt-0.5">📅</span>
-                            <span className="leading-tight">
-                              Scheduled for:{" "}
-                              <strong className="text-indigo-800">
-                                {getAdminMeetingDateLabel(meeting)}
-                              </strong>
-                            </span>
-                          </div>
-                          <div className="flex flex-col gap-1 text-[11px] text-gray-500">
-                            <div
-                              className="flex items-start gap-1.5"
-                              id={`meeting-user-levels-eligibility-${meeting.id}`}
-                            >
-                              <span className="text-gray-400 mt-0.5">🛡️</span>
-                              <span className="leading-tight">
-                                User Level Eligibility:{" "}
-                                <strong className="text-[#4B5E40] uppercase">
-                                  {getUserLevelsDisplay(
-                                    meeting.trackId,
-                                    meeting.userLevels,
+                (state.meetings || []).forEach((m: any) => {
+                  if (m.seriesId) {
+                    if (!groupedMap[m.seriesId]) {
+                      groupedMap[m.seriesId] = [];
+                    }
+                    groupedMap[m.seriesId].push(m);
+                  } else {
+                    const statusLower = String(m.status || "").trim().toLowerCase();
+                    if (statusLower !== "archived" && statusLower !== "completed") {
+                      standaloneActive.push(m);
+                    }
+                  }
+                });
+
+                // Convert grouped map to an array of series
+                const activeSeriesList = Object.entries(groupedMap).map(([seriesId, occurrences]) => {
+                  // Sort occurrences by date ascending
+                  const sortedOccurrences = [...occurrences].sort((a: any, b: any) => {
+                    const dateA = a.occurrenceDate || (a.meetingDates && a.meetingDates[0]) || "";
+                    const dateB = b.occurrenceDate || (b.meetingDates && b.meetingDates[0]) || "";
+                    return dateA.localeCompare(dateB);
+                  });
+
+                  // A series is active if at least one of its occurrences is active (not archived and not completed)
+                  const hasActiveOccurrence = sortedOccurrences.some((o: any) => {
+                    const s = String(o.status || "").toLowerCase().trim();
+                    return s !== "archived" && s !== "completed";
+                  });
+
+                  // Representative can be the first active occurrence, or simply the first occurrence
+                  const representative = sortedOccurrences.find((o: any) => {
+                    const s = String(o.status || "").toLowerCase().trim();
+                    return s !== "archived" && s !== "completed";
+                  }) || sortedOccurrences[0];
+
+                  return {
+                    seriesId,
+                    representative,
+                    occurrences: sortedOccurrences,
+                    isActive: hasActiveOccurrence
+                  };
+                }).filter(s => s.isActive);
+
+                const hasNoMeetings = standaloneActive.length === 0 && activeSeriesList.length === 0;
+
+                if (hasNoMeetings) {
+                  return (
+                    <div className="py-8 text-center text-gray-450 text-xs font-medium bg-gray-50/50 rounded-xl border border-dashed">
+                      No scheduled or active meetings programmed.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Render active recurring meeting series */}
+                    {activeSeriesList.map((series) => {
+                      const rep = series.representative;
+                      const isExpanded = !!expandedSeriesIds[series.seriesId];
+                      return (
+                        <div
+                          key={series.seriesId}
+                          className="p-4 bg-[#F4F7F4] rounded-xl border border-gray-200 flex flex-col justify-between gap-3 text-xs col-span-1 md:col-span-2 shadow-sm animate-fade-in"
+                        >
+                          <div>
+                            <div className="flex flex-wrap justify-between items-start gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[9.5px] font-bold uppercase text-gray-400 font-mono tracking-wider">
+                                  SERIES ID: {series.seriesId}
+                                </span>
+                                <span className="px-2 py-0.5 text-[8.5px] font-extrabold bg-[#4B5E40]/10 text-[#4B5E40] rounded-md border border-[#4B5E40]/20 tracking-wide uppercase font-mono">
+                                  Recurring Series 🔁
+                                </span>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide ${
+                                  rep.type === "knowledge" ||
+                                  rep.type.toLowerCase().includes("knowledge")
+                                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                                    : rep.type === "standup" ||
+                                        rep.type === "microservice" ||
+                                        rep.type
+                                          .toLowerCase()
+                                          .includes("standup")
+                                      ? "bg-teal-50 text-teal-700 border-teal-200"
+                                      : "bg-purple-50 text-purple-700 border-purple-200"
+                                }`}
+                              >
+                                {getMeetingTypeLabel(rep.type)}
+                              </span>
+                            </div>
+                            <h5 className="font-extrabold text-slate-900 mt-2 text-sm sm:text-base leading-snug">
+                              {rep.title}
+                            </h5>
+
+                            <div className="grid grid-cols-1 gap-1.5 mt-3 text-[11px] text-gray-500 font-medium">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-gray-400">🗓️</span>
+                                <span className="font-bold text-gray-700">
+                                  Default Time: {rep.timeString}
+                                </span>
+                              </div>
+                              <div className="flex items-start gap-1.5">
+                                <span className="text-gray-400">📅</span>
+                                <span className="leading-tight">
+                                  Recurrence Frequency: <strong className="text-[#4B5E40] uppercase">{rep.recurrenceFrequency || "one-time"}</strong>
+                                  {rep.recurrenceStartDate && (
+                                    <> (From {rep.recurrenceStartDate} to {rep.recurrenceEndDate || "No End Date"})</>
                                   )}
-                                </strong>
-                              </span>
-                            </div>
-                            <div
-                              className="flex items-start gap-1.5"
-                              id={`meeting-team-tracks-eligibility-${meeting.id}`}
-                            >
-                              <span className="text-gray-400 mt-0.5">👥</span>
-                              <span className="leading-tight">
-                                Team Track Eligibility:{" "}
-                                <strong className="text-[#4B5E40] uppercase">
-                                  {getTeamTracksDisplay(
-                                    meeting.targetTeamTrackEligibility,
-                                  )}
-                                </strong>
-                              </span>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5 font-mono text-[10px] break-all text-indigo-700 bg-indigo-50/40 p-1 rounded border border-indigo-100">
-                            <strong>Link:</strong> {meeting.jitsiUrl}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2 pt-1 border-t border-dashed border-gray-150 justify-end items-center">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (expandedAttendanceMeetingId === meeting.id) {
-                              setExpandedAttendanceMeetingId(null);
-                            } else {
-                              setExpandedAttendanceMeetingId(meeting.id);
-                              setAttendanceFilterTab("all");
-                            }
-                          }}
-                          className={`px-2.5 py-1 text-[10.5px] font-bold rounded-lg transition mr-auto cursor-pointer ${
-                            expandedAttendanceMeetingId === meeting.id
-                              ? "bg-emerald-600 text-white hover:bg-emerald-700 font-extrabold shadow-sm"
-                              : "bg-emerald-50 text-emerald-700 border border-emerald-100 hover:bg-emerald-100"
-                          }`}
-                        >
-                          {expandedAttendanceMeetingId === meeting.id
-                            ? "Close Attendance 📊"
-                            : "Track Attendance 📊"}
-                        </button>
-                        <button
-                          onClick={() => {
-                            setEditingMeetingId(meeting.id);
-                            setMeetingTitle(meeting.title);
-                            setMeetingTime(meeting.timeString);
-                            setMeetingUrl(meeting.jitsiUrl);
-                            setMeetingType(meeting.type);
-                            // Preload selections correctly
-                            const rawLevels =
-                              meeting.userLevels !== undefined
-                                ? meeting.userLevels
-                                : meeting.trackId;
-                            setMeetingTrack(
-                              Array.isArray(rawLevels)
-                                ? rawLevels
-                                : rawLevels === "All" || !rawLevels
-                                  ? []
-                                  : [rawLevels],
-                            );
-                            setMeetingTeamTracks(
-                              meeting.targetTeamTrackEligibility || [],
-                            );
-                            setMeetingScheduleDays(
-                              meeting.scheduleDays &&
-                                meeting.scheduleDays.length > 0
-                                ? meeting.scheduleDays
-                                : [
-                                    "Monday",
-                                    "Tuesday",
-                                    "Wednesday",
-                                    "Thursday",
-                                    "Friday",
-                                  ],
-                            );
-                            setMeetingDates(meeting.meetingDates || []);
-                            
-                            // Edit custom properties initialization
-                            setMeetingDuration(meeting.duration || "60 minutes");
-                            setMeetingOrganizer(meeting.organizer || "Admin Team");
-                            setMeetingStatus(meeting.status || "Upcoming");
-                            setMeetingDescription(meeting.description || "");
-                            setMeetingAssignedUsers(meeting.assignedUserIds || []);
-                            setUserSearchText("");
-                            
-                            setIsAddingMeeting(false);
-                          }}
-                          className="px-2.5 py-1 text-[10.5px] font-bold text-slate-700 bg-white border border-gray-250 rounded-lg hover:bg-gray-50 transition cursor-pointer"
-                        >
-                          Edit properties ✏️
-                        </button>
-                        <button
-                          onClick={() => setMeetingToDeleteId(meeting.id)}
-                          className="px-2.5 py-1 text-[10.5px] font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-lg hover:bg-rose-100 transition cursor-pointer"
-                        >
-                          Delete scheduled 🗑️
-                        </button>
-                      </div>
-
-                      {/* Attendance Tracker expanded drawer */}
-                      {expandedAttendanceMeetingId === meeting.id && (() => {
-                        const eligibleAssignments = (state.meetingAssignments || []).filter(
-                          (a: any) => a.meetingId === meeting.id
-                        );
-                        const eligibleUserIds = eligibleAssignments.map((a: any) => a.userId);
-                        
-                        const eligibleProfiles = (state.profiles || []).filter(
-                          (p: any) => p.role !== "admin" && eligibleUserIds.includes(p.id)
-                        );
-                        
-                        const attendanceLogs = (state.attendance || []).filter(
-                          (a: any) => a.meetingId === meeting.id
-                        );
-                        
-                        const attendedUserIds = attendanceLogs.map((log: any) => log.userId);
-                        
-                        // Map users status list
-                        const list = eligibleProfiles.map((p: any) => {
-                          const log = attendanceLogs.find((l: any) => l.userId === p.id);
-                          return {
-                            id: p.id,
-                            fullName: p.fullName,
-                            username: p.username,
-                            learningLevel: p.learningLevel || p.techExperience || "Apprentice level 1",
-                            track: p.track || "General",
-                            attended: !!log,
-                            status: log ? log.status : "Absent",
-                            timestamp: log ? log.timestamp : null
-                          };
-                        });
-
-                        // Filter based on selected tab
-                        const attendedList = list.filter((item: any) => item.attended);
-                        const absentList = list.filter((item: any) => !item.attended);
-                        
-                        const displayedList = 
-                          attendanceFilterTab === "attended" 
-                            ? attendedList 
-                            : attendanceFilterTab === "absent" 
-                              ? absentList 
-                              : list;
-
-                        const attendanceRate = list.length > 0 
-                          ? Math.round((attendedList.length / list.length) * 100) 
-                          : 0;
-
-                        return (
-                          <div 
-                            className="mt-3 p-3 bg-white border border-gray-200 rounded-xl space-y-3 animate-fade-in text-left col-span-1 md:col-span-2"
-                            id={`attendance-tracker-panel-${meeting.id}`}
-                          >
-                            <div className="flex items-center justify-between border-b border-gray-100 pb-2">
-                              <div className="flex items-center gap-1.5 text-[#4B5E40] font-extrabold text-xs">
-                                <Users className="w-4 h-4" />
-                                <span>Attendance Summary</span>
+                                </span>
                               </div>
-                              <span className="text-[10px] font-extrabold px-1.5 py-0.5 bg-gray-100 text-gray-700 rounded-full">
-                                {attendedList.length} / {list.length} Joined
-                              </span>
-                            </div>
-
-                            {/* Small quick metrics bar */}
-                            <div className="grid grid-cols-3 gap-2 text-center">
-                              <div className="bg-[#4B5E40]/5 p-1.5 rounded-lg border border-[#4B5E40]/10">
-                                <div className="text-[8px] uppercase font-bold text-gray-400">Rate</div>
-                                <div className="text-xs font-black text-[#4B5E40]">{attendanceRate}%</div>
-                              </div>
-                              <div className="bg-emerald-50 p-1.5 rounded-lg border border-emerald-100">
-                                <div className="text-[8px] uppercase font-bold text-[#4B5E40]">Joined</div>
-                                <div className="text-xs font-black text-emerald-700">{attendedList.length}</div>
-                              </div>
-                              <div className="bg-rose-50 p-1.5 rounded-lg border border-rose-100">
-                                <div className="text-[8px] uppercase font-bold text-rose-500">Absent</div>
-                                <div className="text-xs font-black text-rose-700">{absentList.length}</div>
-                              </div>
-                            </div>
-
-                            {/* Attendance filter tabs */}
-                            <div className="flex gap-1 bg-gray-150/60 p-0.5 rounded-lg text-[10px] font-bold">
-                              <button
-                                type="button"
-                                onClick={() => setAttendanceFilterTab("all")}
-                                className={`flex-1 py-1 rounded-md text-center transition ${
-                                  attendanceFilterTab === "all"
-                                    ? "bg-white text-gray-800 shadow-2xs font-extrabold"
-                                    : "text-gray-500 hover:text-gray-950"
-                                }`}
-                              >
-                                All ({list.length})
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setAttendanceFilterTab("attended")}
-                                className={`flex-1 py-1 rounded-md text-center transition ${
-                                  attendanceFilterTab === "attended"
-                                    ? "bg-white text-emerald-700 shadow-2xs font-extrabold"
-                                    : "text-gray-500 hover:text-gray-950"
-                                }`}
-                              >
-                                Attended ({attendedList.length})
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setAttendanceFilterTab("absent")}
-                                className={`flex-1 py-1 rounded-md text-center transition ${
-                                  attendanceFilterTab === "absent"
-                                    ? "bg-white text-rose-600 shadow-2xs font-extrabold"
-                                    : "text-gray-500 hover:text-gray-950"
-                                }`}
-                              >
-                                Absent ({absentList.length})
-                              </button>
-                            </div>
-
-                            {/* Core lists display */}
-                            <div className="space-y-1.5 max-h-[170px] overflow-y-auto pr-1">
-                              {displayedList.length === 0 ? (
-                                <div className="text-center py-4 text-gray-400 text-[10px] font-medium italic">
-                                  No records match this filter.
+                              <div className="flex flex-col gap-1 text-[11px] text-gray-500">
+                                <div className="flex items-start gap-1.5">
+                                  <span className="text-gray-400 mt-0.5">🛡️</span>
+                                  <span className="leading-tight">
+                                    User Level Eligibility:{" "}
+                                    <strong className="text-[#4B5E40] uppercase">
+                                      {getUserLevelsDisplay(rep.trackId, rep.userLevels)}
+                                    </strong>
+                                  </span>
                                 </div>
-                              ) : (
-                                displayedList.map((item: any) => {
-                                  const initials = (item.fullName || item.username || "U")
-                                    .split(" ")
-                                    .map((n: string) => n[0])
-                                    .join("")
-                                    .substring(0, 2)
-                                    .toUpperCase();
+                                <div className="flex items-start gap-1.5">
+                                  <span className="text-gray-400 mt-0.5">👥</span>
+                                  <span className="leading-tight">
+                                    Team Track Eligibility:{" "}
+                                    <strong className="text-[#4B5E40] uppercase">
+                                      {getTeamTracksDisplay(rep.targetTeamTrackEligibility)}
+                                    </strong>
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5 font-mono text-[10px] break-all text-indigo-700 bg-indigo-50/40 p-1.5 rounded border border-indigo-100 mt-1">
+                                <strong>Common Jitsi Link:</strong> {rep.jitsiUrl}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2 pt-2 border-t border-dashed border-gray-150 justify-between items-center mt-2">
+                            <span className="text-gray-500 font-bold text-[11px]">
+                              Contains {series.occurrences.length} occurrences total
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExpandedSeriesIds(prev => ({
+                                  ...prev,
+                                  [series.seriesId]: !prev[series.seriesId]
+                                }));
+                              }}
+                              className="px-3 py-1.5 text-[11px] font-black text-white bg-[#4B5E40] hover:bg-[#3d4d34] rounded-lg shadow-2xs transition cursor-pointer flex items-center gap-1"
+                            >
+                              <span>{isExpanded ? "Collapse Series ⬆️" : "Expand Series ⬇️"}</span>
+                            </button>
+                          </div>
+
+                          {/* Render sub-list of occurrences if expanded */}
+                          {isExpanded && (
+                            <div className="mt-4 p-3.5 bg-white rounded-xl border border-gray-200 space-y-3 animate-fade-in text-left">
+                              <h6 className="font-extrabold text-[#4B5E40] text-xs uppercase tracking-wider border-b border-gray-100 pb-2">
+                                Series Occurrences
+                              </h6>
+                              <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                                {series.occurrences.map((occurrence: any) => {
+                                  // Compute eligibility/attendance for this occurrence
+                                  const eligibleAssignments = (state.meetingAssignments || []).filter(
+                                    (a: any) => a.meetingId === occurrence.id
+                                  );
+                                  const eligibleUserIds = eligibleAssignments.map((a: any) => a.userId);
+                                  const eligibleProfiles = (state.profiles || []).filter(
+                                    (p: any) => p.role !== "admin" && (
+                                      eligibleUserIds.includes(p.id) ||
+                                      isUserEligibleForMeetingInBackend(p, occurrence, state.meetingAssignments || []) ||
+                                      (state.attendance || []).some((a: any) => a.meetingId === occurrence.id && a.userId === p.id)
+                                    )
+                                  );
+                                  const attendanceLogs = (state.attendance || []).filter(
+                                    (a: any) => a.meetingId === occurrence.id
+                                  );
+                                  const attendanceRate = eligibleProfiles.length > 0 
+                                    ? Math.round((attendanceLogs.length / eligibleProfiles.length) * 100) 
+                                    : 0;
+
+                                  const occStatus = occurrence.status || "Upcoming";
 
                                   return (
-                                    <div 
-                                      key={item.id}
-                                      className="flex items-center justify-between p-1.5 hover:bg-gray-50 rounded-lg border border-gray-100 bg-white transition gap-2"
+                                    <div
+                                      key={occurrence.id}
+                                      className="p-3 bg-gray-50/70 hover:bg-gray-50 rounded-xl border border-gray-200/80 flex flex-col sm:flex-row justify-between gap-3 text-xs"
                                     >
-                                      <div className="flex items-center gap-1.5 min-w-0">
-                                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black shrink-0 ${
-                                          item.attended 
-                                            ? "bg-[#4B5E40] text-white" 
-                                            : "bg-gray-200 text-gray-600"
-                                        }`}>
-                                          {initials}
+                                      <div className="space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[10px] font-extrabold text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-150">
+                                            📅 {occurrence.occurrenceDate}
+                                          </span>
+                                          <span className="text-[10px] font-bold text-gray-500">
+                                            🕒 {occurrence.timeString}
+                                          </span>
+                                          <span className={`px-2 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide uppercase ${
+                                            occStatus.toLowerCase() === "upcoming"
+                                              ? "bg-blue-50 text-blue-700 border-blue-200"
+                                              : occStatus.toLowerCase() === "completed"
+                                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                                : occStatus.toLowerCase() === "cancelled"
+                                                  ? "bg-rose-50 text-rose-700 border-rose-200"
+                                                  : "bg-gray-100 text-gray-700 border-gray-300"
+                                          }`}>
+                                            {occStatus}
+                                          </span>
                                         </div>
-                                        <div className="min-w-0">
-                                          <div className="font-extrabold text-[11px] text-gray-800 truncate">
-                                            {item.fullName}
-                                          </div>
-                                          <div className="text-[9px] text-gray-400 truncate">
-                                            @{item.username} • {item.track}
-                                          </div>
+                                        <div className="flex items-center gap-2 text-[10.5px] text-gray-600">
+                                          <span className="font-extrabold">Attendance rate:</span>
+                                          <span className={`font-black ${attendanceRate >= 70 ? 'text-emerald-700' : attendanceRate >= 40 ? 'text-amber-700' : 'text-rose-600'}`}>
+                                            {attendanceRate}% ({attendanceLogs.length} / {eligibleProfiles.length} Joined)
+                                          </span>
                                         </div>
                                       </div>
 
-                                      <div className="flex flex-col items-end shrink-0 gap-0.5">
-                                        <span className={`px-1.5 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide uppercase ${
-                                          item.status === "Attended" || item.status === "on time"
-                                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                            : item.status === "Late"
-                                              ? "bg-amber-50 text-amber-700 border-amber-200"
-                                              : "bg-rose-50 text-rose-700 border-rose-200"
-                                        }`}>
-                                          {item.status}
-                                        </span>
-                                        {item.attended && item.timestamp && (
-                                          <span className="text-[8.5px] text-gray-400">
-                                            {(() => {
-                                              try {
-                                                const d = new Date(item.timestamp);
-                                                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                                              } catch (_) {
-                                                return "";
+                                      <div className="flex flex-wrap gap-1.5 items-center justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            if (expandedAttendanceMeetingId === occurrence.id) {
+                                              setExpandedAttendanceMeetingId(null);
+                                            } else {
+                                              setExpandedAttendanceMeetingId(occurrence.id);
+                                              setAttendanceFilterTab("all");
+                                            }
+                                          }}
+                                          className={`px-2.5 py-1 text-[10.5px] font-bold rounded-lg transition cursor-pointer ${
+                                            expandedAttendanceMeetingId === occurrence.id
+                                              ? "bg-emerald-600 text-white hover:bg-emerald-700 font-extrabold shadow-sm"
+                                              : "bg-emerald-50 text-emerald-700 border border-emerald-100 hover:bg-emerald-100"
+                                          }`}
+                                        >
+                                          {expandedAttendanceMeetingId === occurrence.id
+                                            ? "Close Attendance 📊"
+                                            : "Track Attendance 📊"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingMeetingId(occurrence.id);
+                                            setMeetingTitle(occurrence.title);
+                                            setMeetingTime(occurrence.timeString);
+                                            setMeetingUrl(occurrence.jitsiUrl);
+                                            setMeetingType(occurrence.type);
+                                            const rawLevels = occurrence.userLevels !== undefined ? occurrence.userLevels : occurrence.trackId;
+                                            setMeetingTrack(
+                                              Array.isArray(rawLevels)
+                                                ? rawLevels
+                                                : rawLevels === "All" || !rawLevels
+                                                  ? []
+                                                  : [rawLevels],
+                                            );
+                                            setMeetingTeamTracks(occurrence.targetTeamTrackEligibility || []);
+                                            setMeetingScheduleDays(occurrence.scheduleDays && occurrence.scheduleDays.length > 0 ? occurrence.scheduleDays : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]);
+                                            setMeetingDates(occurrence.meetingDates || []);
+                                            setMeetingDuration(occurrence.duration || "60 minutes");
+                                            setMeetingOrganizer(occurrence.organizer || "Admin Team");
+                                            setMeetingStatus(occurrence.status || "Upcoming");
+                                            setMeetingDescription(occurrence.description || "");
+                                            setMeetingAssignedUsers(occurrence.assignedUserIds || []);
+                                            setUserSearchText("");
+                                            setIsRecurring(true);
+                                            setRecurrenceFrequency(occurrence.recurrenceFrequency || "one-time");
+                                            setRecurrenceStartDate(occurrence.recurrenceStartDate || "");
+                                            setRecurrenceEndDate(occurrence.recurrenceEndDate || "");
+                                            setRecurrenceCustomInterval(occurrence.recurrenceCustomInterval || 1);
+                                            setRecurrenceEditMode("single");
+                                            setIsAddingMeeting(false);
+                                            // Scroll back to editing form smoothly after state update
+                                            setTimeout(() => {
+                                              const formElement = document.getElementById("meeting-edit-form-anchor");
+                                              if (formElement) {
+                                                formElement.scrollIntoView({ behavior: "smooth", block: "start" });
+                                              } else {
+                                                setTimeout(() => {
+                                                  const formElementRetry = document.getElementById("meeting-edit-form-anchor");
+                                                  if (formElementRetry) {
+                                                    formElementRetry.scrollIntoView({ behavior: "smooth", block: "start" });
+                                                  }
+                                                }, 200);
                                               }
-                                            })()}
+                                            }, 100);
+                                          }}
+                                          className="px-2.5 py-1 text-[10.5px] font-bold text-slate-700 bg-white border border-gray-250 rounded-lg hover:bg-gray-50 transition cursor-pointer"
+                                        >
+                                          Edit properties ✏️
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setMeetingToDeleteId(occurrence.id);
+                                            setDeleteRecurrenceOption("single");
+                                          }}
+                                          className="px-2.5 py-1 text-[10.5px] font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-lg hover:bg-rose-100 transition cursor-pointer"
+                                        >
+                                          Delete scheduled 🗑️
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Render attendance drawer inline if active for any occurrence in this series */}
+                              {series.occurrences.some((occ: any) => expandedAttendanceMeetingId === occ.id) && (() => {
+                                const currentOcc = series.occurrences.find((occ: any) => expandedAttendanceMeetingId === occ.id);
+                                const eligibleAssignments = (state.meetingAssignments || []).filter(
+                                  (a: any) => a.meetingId === currentOcc.id
+                                );
+                                const eligibleUserIds = eligibleAssignments.map((a: any) => a.userId);
+                                const eligibleProfiles = (state.profiles || []).filter(
+                                  (p: any) => p.role !== "admin" && (
+                                    eligibleUserIds.includes(p.id) ||
+                                    isUserEligibleForMeetingInBackend(p, currentOcc, state.meetingAssignments || []) ||
+                                    (state.attendance || []).some((a: any) => a.meetingId === currentOcc.id && a.userId === p.id)
+                                  )
+                                );
+                                const attendanceLogs = (state.attendance || []).filter(
+                                  (a: any) => a.meetingId === currentOcc.id
+                                );
+                                const list = eligibleProfiles.map((p: any) => {
+                                  const log = attendanceLogs.find((l: any) => l.userId === p.id);
+                                  return {
+                                    id: p.id,
+                                    fullName: p.fullName,
+                                    username: p.username,
+                                    learningLevel: p.learningLevel || p.techExperience || "Apprentice level 1",
+                                    track: p.track || "General",
+                                    attended: !!log,
+                                    status: log ? log.status : "Absent",
+                                    timestamp: log ? log.timestamp : null
+                                  };
+                                });
+
+                                const attendedList = list.filter((item: any) => item.attended);
+                                const absentList = list.filter((item: any) => !item.attended);
+                                const displayedList = 
+                                  attendanceFilterTab === "attended" 
+                                    ? attendedList 
+                                    : attendanceFilterTab === "absent" 
+                                      ? absentList 
+                                      : list;
+
+                                const attendanceRate = list.length > 0 
+                                  ? Math.round((attendedList.length / list.length) * 100) 
+                                  : 0;
+
+                                return (
+                                  <div className="mt-3 p-4 bg-gray-50 rounded-xl border border-gray-250 space-y-3 animate-fade-in text-left">
+                                    <div className="flex items-center justify-between border-b border-gray-150 pb-2">
+                                      <div className="flex items-center gap-1.5 text-[#4B5E40] font-extrabold text-xs">
+                                        <Users className="w-4 h-4" />
+                                        <span>Attendance Summary for {currentOcc.occurrenceDate}</span>
+                                      </div>
+                                      <span className="text-[10px] font-extrabold px-1.5 py-0.5 bg-gray-200 text-gray-750 rounded-full">
+                                        {attendedList.length} / {list.length} Joined
+                                      </span>
+                                    </div>
+
+                                    {/* Metrics display */}
+                                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                                      <div className="bg-[#4B5E40]/5 p-1.5 rounded-lg border border-[#4B5E40]/10">
+                                        <div className="text-[8px] uppercase font-bold text-gray-400">Rate</div>
+                                        <div className="text-xs font-black text-[#4B5E40]">{attendanceRate}%</div>
+                                      </div>
+                                      <div className="bg-emerald-50 p-1.5 rounded-lg border border-emerald-100">
+                                        <div className="text-[8px] uppercase font-bold text-[#4B5E40]">Joined</div>
+                                        <div className="text-xs font-black text-emerald-700">{attendedList.length}</div>
+                                      </div>
+                                      <div className="bg-rose-50 p-1.5 rounded-lg border border-rose-100">
+                                        <div className="text-[8px] uppercase font-bold text-rose-500">Absent</div>
+                                        <div className="text-xs font-black text-rose-700">{absentList.length}</div>
+                                      </div>
+                                    </div>
+
+                                    {/* Filter tabs */}
+                                    <div className="flex gap-1 bg-gray-200/70 p-0.5 rounded-lg text-[10px] font-bold">
+                                      <button
+                                        type="button"
+                                        onClick={() => setAttendanceFilterTab("all")}
+                                        className={`flex-1 py-1 rounded-md text-center transition ${
+                                          attendanceFilterTab === "all" ? "bg-white text-gray-800 shadow-2xs font-extrabold" : "text-gray-500 hover:text-gray-950"
+                                        }`}
+                                      >
+                                        All ({list.length})
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setAttendanceFilterTab("attended")}
+                                        className={`flex-1 py-1 rounded-md text-center transition ${
+                                          attendanceFilterTab === "attended" ? "bg-white text-emerald-700 shadow-2xs font-extrabold" : "text-gray-500 hover:text-gray-950"
+                                        }`}
+                                      >
+                                        Attended ({attendedList.length})
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setAttendanceFilterTab("absent")}
+                                        className={`flex-1 py-1 rounded-md text-center transition ${
+                                          attendanceFilterTab === "absent" ? "bg-white text-rose-600 shadow-2xs font-extrabold" : "text-gray-500 hover:text-gray-950"
+                                        }`}
+                                      >
+                                        Absent ({absentList.length})
+                                      </button>
+                                    </div>
+
+                                    {/* Attendance rows */}
+                                    <div className="space-y-1.5 max-h-[170px] overflow-y-auto pr-1">
+                                      {displayedList.length === 0 ? (
+                                        <div className="text-center py-4 text-gray-400 text-[10px] font-medium italic">
+                                          No records match this filter.
+                                        </div>
+                                      ) : (
+                                        displayedList.map((item: any) => {
+                                          const initials = (item.fullName || item.username || "U")
+                                            .split(" ")
+                                            .map((n: string) => n[0])
+                                            .join("")
+                                            .substring(0, 2)
+                                            .toUpperCase();
+
+                                          return (
+                                            <div
+                                              key={item.id}
+                                              className="flex items-center justify-between p-1.5 hover:bg-gray-55 rounded-lg border border-gray-150 bg-white transition gap-2"
+                                            >
+                                              <div className="flex items-center gap-1.5 min-w-0">
+                                                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black shrink-0 ${
+                                                  item.attended ? "bg-[#4B5E40] text-white" : "bg-gray-200 text-gray-600"
+                                                }`}>
+                                                  {initials}
+                                                </div>
+                                                <div className="min-w-0">
+                                                  <div className="font-extrabold text-[11px] text-gray-800 truncate">{item.fullName}</div>
+                                                  <div className="text-[9px] text-gray-400 truncate">@{item.username} • {item.track}</div>
+                                                </div>
+                                              </div>
+
+                                              <div className="flex flex-col items-end shrink-0 gap-0.5">
+                                                <span className={`px-1.5 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide uppercase ${
+                                                  item.status === "Attended" || item.status === "on time"
+                                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                                    : item.status === "Late"
+                                                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                                                      : "bg-rose-50 text-rose-700 border-rose-200"
+                                                }`}>
+                                                  {item.status}
+                                                </span>
+                                                {item.attended && item.timestamp && (
+                                                  <span className="text-[8.5px] text-gray-400">
+                                                    {(() => {
+                                                      try {
+                                                        const d = new Date(item.timestamp);
+                                                        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                                      } catch (_) {
+                                                        return "";
+                                                      }
+                                                    })()}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                          );
+                                        })
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Render active standalone meetings */}
+                    {standaloneActive.map((meeting) => (
+                      <div
+                        key={meeting.id}
+                        className="p-3.5 bg-[#F8FAF8] rounded-xl border border-gray-150 flex flex-col justify-between gap-3 text-xs shadow-2xs animate-fade-in"
+                      >
+                        <div>
+                          <div className="flex justify-between items-start gap-1">
+                            <span className="text-[9.5px] font-bold uppercase text-gray-400 font-mono tracking-wider">
+                              ID: {meeting.id}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide ${
+                                meeting.type === "knowledge" ||
+                                meeting.type.toLowerCase().includes("knowledge")
+                                  ? "bg-amber-50 text-amber-700 border-amber-200"
+                                  : meeting.type === "standup" ||
+                                      meeting.type === "microservice" ||
+                                      meeting.type
+                                        .toLowerCase()
+                                        .includes("standup")
+                                    ? "bg-teal-50 text-teal-700 border-teal-200"
+                                    : "bg-purple-50 text-purple-700 border-purple-200"
+                              }`}
+                            >
+                              {getMeetingTypeLabel(meeting.type)}
+                            </span>
+                          </div>
+                          <h5 className="font-extrabold text-slate-900 mt-1.5 text-xs sm:text-sm leading-snug">
+                            {meeting.title}
+                          </h5>
+
+                          <div className="grid grid-cols-1 gap-1 mt-2 text-[11px] text-gray-500 font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-gray-400">🗓️</span>
+                              <span className="font-bold text-gray-700">
+                                {meeting.timeString}
+                              </span>
+                            </div>
+                            <div className="flex items-start gap-1.5">
+                              <span className="text-gray-400 mt-0.5">📅</span>
+                              <span className="leading-tight">
+                                Scheduled for:{" "}
+                                <strong className="text-indigo-800">
+                                  {getAdminMeetingDateLabel(meeting)}
+                                </strong>
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-1 text-[11px] text-gray-500">
+                              <div
+                                className="flex items-start gap-1.5"
+                                id={`meeting-user-levels-eligibility-${meeting.id}`}
+                              >
+                                <span className="text-gray-400 mt-0.5">🛡️</span>
+                                <span className="leading-tight">
+                                  User Level Eligibility:{" "}
+                                  <strong className="text-[#4B5E40] uppercase">
+                                    {getUserLevelsDisplay(
+                                      meeting.trackId,
+                                      meeting.userLevels,
+                                    )}
+                                  </strong>
+                                </span>
+                              </div>
+                              <div
+                                className="flex items-start gap-1.5"
+                                id={`meeting-team-tracks-eligibility-${meeting.id}`}
+                              >
+                                <span className="text-gray-400 mt-0.5">👥</span>
+                                <span className="leading-tight">
+                                  Team Track Eligibility:{" "}
+                                  <strong className="text-[#4B5E40] uppercase">
+                                    {getTeamTracksDisplay(
+                                      meeting.targetTeamTrackEligibility,
+                                    )}
+                                  </strong>
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 font-mono text-[10px] break-all text-indigo-700 bg-indigo-50/40 p-1 rounded border border-indigo-100">
+                              <strong>Link:</strong> {meeting.jitsiUrl}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 pt-1 border-t border-dashed border-gray-150 justify-end items-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (expandedAttendanceMeetingId === meeting.id) {
+                                setExpandedAttendanceMeetingId(null);
+                              } else {
+                                setExpandedAttendanceMeetingId(meeting.id);
+                                setAttendanceFilterTab("all");
+                              }
+                            }}
+                            className={`px-2.5 py-1 text-[10.5px] font-bold rounded-lg transition mr-auto cursor-pointer ${
+                              expandedAttendanceMeetingId === meeting.id
+                                ? "bg-emerald-600 text-white hover:bg-emerald-700 font-extrabold shadow-sm"
+                                : "bg-emerald-50 text-emerald-700 border border-emerald-100 hover:bg-emerald-100"
+                            }`}
+                          >
+                            {expandedAttendanceMeetingId === meeting.id
+                              ? "Close Attendance 📊"
+                              : "Track Attendance 📊"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingMeetingId(meeting.id);
+                              setMeetingTitle(meeting.title);
+                              setMeetingTime(meeting.timeString);
+                              setMeetingUrl(meeting.jitsiUrl);
+                              setMeetingType(meeting.type);
+                              const rawLevels =
+                                meeting.userLevels !== undefined
+                                  ? meeting.userLevels
+                                  : meeting.trackId;
+                              setMeetingTrack(
+                                Array.isArray(rawLevels)
+                                  ? rawLevels
+                                  : rawLevels === "All" || !rawLevels
+                                    ? []
+                                    : [rawLevels],
+                              );
+                              setMeetingTeamTracks(
+                                meeting.targetTeamTrackEligibility || [],
+                              );
+                              setMeetingScheduleDays(
+                                meeting.scheduleDays &&
+                                  meeting.scheduleDays.length > 0
+                                  ? meeting.scheduleDays
+                                  : [
+                                      "Monday",
+                                      "Tuesday",
+                                      "Wednesday",
+                                      "Thursday",
+                                      "Friday",
+                                    ],
+                              );
+                              setMeetingDates(meeting.meetingDates || []);
+                              setMeetingDuration(meeting.duration || "60 minutes");
+                              setMeetingOrganizer(meeting.organizer || "Admin Team");
+                              setMeetingStatus(meeting.status || "Upcoming");
+                              setMeetingDescription(meeting.description || "");
+                              setMeetingAssignedUsers(meeting.assignedUserIds || []);
+                              setUserSearchText("");
+                              setIsRecurring(false);
+                              setRecurrenceFrequency("one-time");
+                              setRecurrenceStartDate("");
+                              setRecurrenceEndDate("");
+                              setRecurrenceCustomInterval(1);
+                              setRecurrenceEditMode("single");
+                              setIsAddingMeeting(false);
+                              // Scroll back to editing form smoothly after state update
+                              setTimeout(() => {
+                                const formElement = document.getElementById("meeting-edit-form-anchor");
+                                if (formElement) {
+                                  formElement.scrollIntoView({ behavior: "smooth", block: "start" });
+                                } else {
+                                  setTimeout(() => {
+                                    const formElementRetry = document.getElementById("meeting-edit-form-anchor");
+                                    if (formElementRetry) {
+                                      formElementRetry.scrollIntoView({ behavior: "smooth", block: "start" });
+                                    }
+                                  }, 200);
+                                }
+                              }, 100);
+                            }}
+                            className="px-2.5 py-1 text-[10.5px] font-bold text-slate-700 bg-white border border-gray-250 rounded-lg hover:bg-gray-50 transition cursor-pointer"
+                          >
+                            Edit properties ✏️
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMeetingToDeleteId(meeting.id);
+                              setDeleteRecurrenceOption("single");
+                            }}
+                            className="px-2.5 py-1 text-[10.5px] font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-lg hover:bg-rose-100 transition cursor-pointer"
+                          >
+                            Delete scheduled 🗑️
+                          </button>
+                        </div>
+
+                        {/* Standalone Attendance Drawer */}
+                        {expandedAttendanceMeetingId === meeting.id && (() => {
+                          const eligibleAssignments = (state.meetingAssignments || []).filter(
+                            (a: any) => a.meetingId === meeting.id
+                          );
+                          const eligibleUserIds = eligibleAssignments.map((a: any) => a.userId);
+                          const eligibleProfiles = (state.profiles || []).filter(
+                            (p: any) => p.role !== "admin" && (
+                              eligibleUserIds.includes(p.id) ||
+                              isUserEligibleForMeetingInBackend(p, meeting, state.meetingAssignments || []) ||
+                              (state.attendance || []).some((a: any) => a.meetingId === meeting.id && a.userId === p.id)
+                            )
+                          );
+                          const attendanceLogs = (state.attendance || []).filter(
+                            (a: any) => a.meetingId === meeting.id
+                          );
+                          const list = eligibleProfiles.map((p: any) => {
+                            const log = attendanceLogs.find((l: any) => l.userId === p.id);
+                            return {
+                              id: p.id,
+                              fullName: p.fullName,
+                              username: p.username,
+                              learningLevel: p.learningLevel || p.techExperience || "Apprentice level 1",
+                              track: p.track || "General",
+                              attended: !!log,
+                              status: log ? log.status : "Absent",
+                              timestamp: log ? log.timestamp : null
+                            };
+                          });
+
+                          const attendedList = list.filter((item: any) => item.attended);
+                          const absentList = list.filter((item: any) => !item.attended);
+                          const displayedList = 
+                            attendanceFilterTab === "attended" 
+                              ? attendedList 
+                              : attendanceFilterTab === "absent" 
+                                ? absentList 
+                                : list;
+
+                          const attendanceRate = list.length > 0 
+                            ? Math.round((attendedList.length / list.length) * 100) 
+                            : 0;
+
+                          return (
+                            <div
+                              className="mt-3 p-3 bg-white border border-gray-200 rounded-xl space-y-3 animate-fade-in text-left col-span-1 md:col-span-2"
+                              id={`attendance-tracker-panel-${meeting.id}`}
+                            >
+                              <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                                <div className="flex items-center gap-1.5 text-[#4B5E40] font-extrabold text-xs">
+                                  <Users className="w-4 h-4" />
+                                  <span>Attendance Summary</span>
+                                </div>
+                                <span className="text-[10px] font-extrabold px-1.5 py-0.5 bg-gray-100 text-gray-750 rounded-full">
+                                  {attendedList.length} / {list.length} Joined
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-2 text-center">
+                                <div className="bg-[#4B5E40]/5 p-1.5 rounded-lg border border-[#4B5E40]/10">
+                                  <div className="text-[8px] uppercase font-bold text-gray-400">Rate</div>
+                                  <div className="text-xs font-black text-[#4B5E40]">{attendanceRate}%</div>
+                                </div>
+                                <div className="bg-emerald-50 p-1.5 rounded-lg border border-emerald-100">
+                                  <div className="text-[8px] uppercase font-bold text-[#4B5E40]">Joined</div>
+                                  <div className="text-xs font-black text-emerald-700">{attendedList.length}</div>
+                                </div>
+                                <div className="bg-rose-50 p-1.5 rounded-lg border border-rose-100">
+                                  <div className="text-[8px] uppercase font-bold text-rose-500">Absent</div>
+                                  <div className="text-xs font-black text-rose-700">{absentList.length}</div>
+                                </div>
+                              </div>
+
+                              <div className="flex gap-1 bg-gray-150/60 p-0.5 rounded-lg text-[10px] font-bold">
+                                <button
+                                  type="button"
+                                  onClick={() => setAttendanceFilterTab("all")}
+                                  className={`flex-1 py-1 rounded-md text-center transition ${
+                                    attendanceFilterTab === "all" ? "bg-white text-gray-800 shadow-2xs font-extrabold" : "text-gray-500 hover:text-gray-950"
+                                  }`}
+                                >
+                                  All ({list.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setAttendanceFilterTab("attended")}
+                                  className={`flex-1 py-1 rounded-md text-center transition ${
+                                    attendanceFilterTab === "attended" ? "bg-white text-emerald-700 shadow-2xs font-extrabold" : "text-gray-500 hover:text-gray-950"
+                                  }`}
+                                >
+                                  Attended ({attendedList.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setAttendanceFilterTab("absent")}
+                                  className={`flex-1 py-1 rounded-md text-center transition ${
+                                    attendanceFilterTab === "absent" ? "bg-white text-rose-600 shadow-2xs font-extrabold" : "text-gray-500 hover:text-gray-950"
+                                  }`}
+                                >
+                                  Absent ({absentList.length})
+                                </button>
+                              </div>
+
+                              <div className="space-y-1.5 max-h-[170px] overflow-y-auto pr-1">
+                                {displayedList.length === 0 ? (
+                                  <div className="text-center py-4 text-gray-400 text-[10px] font-medium italic">
+                                    No records match this filter.
+                                  </div>
+                                ) : (
+                                  displayedList.map((item: any) => {
+                                    const initials = (item.fullName || item.username || "U")
+                                      .split(" ")
+                                      .map((n: string) => n[0])
+                                      .join("")
+                                      .substring(0, 2)
+                                      .toUpperCase();
+
+                                    return (
+                                      <div
+                                        key={item.id}
+                                        className="flex items-center justify-between p-1.5 hover:bg-gray-55 rounded-lg border border-gray-150 bg-white transition gap-2"
+                                      >
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black shrink-0 ${
+                                            item.attended ? "bg-[#4B5E40] text-white" : "bg-gray-200 text-gray-600"
+                                          }`}>
+                                            {initials}
+                                          </div>
+                                          <div className="min-w-0">
+                                            <div className="font-extrabold text-[11px] text-gray-800 truncate">{item.fullName}</div>
+                                            <div className="text-[9px] text-gray-400 truncate">@{item.username} • {item.track}</div>
+                                          </div>
+                                        </div>
+
+                                        <div className="flex flex-col items-end shrink-0 gap-0.5">
+                                          <span className={`px-1.5 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide uppercase ${
+                                            item.status === "Attended" || item.status === "on time"
+                                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                              : item.status === "Late"
+                                                ? "bg-amber-50 text-amber-700 border-amber-200"
+                                                : "bg-rose-50 text-rose-700 border-rose-200"
+                                          }`}>
+                                            {item.status}
                                           </span>
+                                          {item.attended && item.timestamp && (
+                                            <span className="text-[8.5px] text-gray-400">
+                                              {(() => {
+                                                try {
+                                                  const d = new Date(item.timestamp);
+                                                  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                                } catch (_) {
+                                                  return "";
+                                                }
+                                              })()}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+          {/* ARCHIVED & COMPLETED MEETINGS REPOSITORY */}
+          <div className="bg-white rounded-2xl border border-gray-150 p-5 shadow-xs transition-all duration-200" id="archived-meetings-repository">
+            <div 
+              className="flex items-center justify-between cursor-pointer select-none group"
+              onClick={() => setIsArchiveRepoExpanded(!isArchiveRepoExpanded)}
+            >
+              <div className="space-y-1 pr-4">
+                <h3 className="font-extrabold text-sm text-[#4B5E40] leading-normal flex items-center gap-2 group-hover:text-[#3d4d34] transition-colors">
+                  <span>📁 Archived & Completed Meetings Repository</span>
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Historical database of meetings that have completed or been manually archived. These records retain all full meeting details, attendance logs, and reports, and remain available for export.
+                </p>
+              </div>
+              <div className="text-gray-400 group-hover:text-gray-600 transition-colors shrink-0">
+                <ChevronDown className={`w-5 h-5 transform transition-transform duration-200 ${isArchiveRepoExpanded ? "rotate-180" : ""}`} />
+              </div>
+            </div>
+
+            {isArchiveRepoExpanded && (
+              <div className="space-y-4 mt-4 pt-4 border-t border-gray-100 animate-slide-up">
+                {/* Filter controls */}
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-gray-50/50 p-3 rounded-xl border border-gray-100 text-xs font-semibold">
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase tracking-wider text-gray-400">Search Meetings</label>
+                    <input
+                      type="text"
+                      placeholder="Search title, description..."
+                      value={archiveSearchText}
+                      onChange={(e) => setArchiveSearchText(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#4B5E40] text-xs font-medium"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase tracking-wider text-gray-400">Filter by Date</label>
+                    <input
+                      type="date"
+                      value={archiveDateFilter}
+                      onChange={(e) => setArchiveDateFilter(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#4B5E40] text-xs font-medium"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase tracking-wider text-gray-400">Filter by Type</label>
+                    <select
+                      value={archiveTypeFilter}
+                      onChange={(e) => setArchiveTypeFilter(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#4B5E40] text-xs font-medium cursor-pointer"
+                    >
+                      <option value="">All Types</option>
+                      {state.meetingTypes && state.meetingTypes.map((type: string) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                      <option value="Knowledge Track">Knowledge Track</option>
+                      <option value="Microservice Alignment">Microservice Alignment</option>
+                      <option value="General Alignment">General Alignment</option>
+                      <option value="Weekly Drills Sync">Weekly Drills Sync</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase tracking-wider text-gray-400">Filter by Organizer</label>
+                    <select
+                      value={archiveOrganizerFilter}
+                      onChange={(e) => setArchiveOrganizerFilter(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#4B5E40] text-xs font-medium cursor-pointer"
+                    >
+                      <option value="">All Organizers</option>
+                      {(() => {
+                        const set = new Set<string>();
+                        set.add("Admin Team");
+                        set.add("Facilitators");
+                        set.add("Track Lead");
+                        set.add("External Speaker");
+
+                        (state.meetings || []).forEach((m: any) => {
+                          const org = String(m.organizer || m.meetingOrganizer || "").trim();
+                          if (org) {
+                            set.add(org);
+                          }
+                        });
+
+                        (state.profiles || [])
+                          .filter(
+                            (p: any) =>
+                              p.role === "admin" ||
+                              p.learningLevel?.toLowerCase() === "admin" ||
+                              p.learningLevel?.toLowerCase() === "mentor" ||
+                              p.learningLevel?.toLowerCase() === "administrative mentor"
+                          )
+                          .forEach((p: any) => {
+                            const name = String(p.fullName || "").trim();
+                            if (name) {
+                              set.add(name);
+                            }
+                          });
+
+                        return Array.from(set)
+                          .sort((a, b) => a.localeCompare(b))
+                          .map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ));
+                      })()}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Reset Filter Button */}
+                {(archiveSearchText || archiveDateFilter || archiveTypeFilter || archiveOrganizerFilter) && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setArchiveSearchText("");
+                        setArchiveDateFilter("");
+                        setArchiveTypeFilter("");
+                        setArchiveOrganizerFilter("");
+                      }}
+                      className="text-[11px] text-rose-600 font-extrabold hover:underline cursor-pointer"
+                    >
+                      Clear Filters &times;
+                    </button>
+                  </div>
+                )}
+
+                {/* List of Archived/Completed Meetings */}
+                <div className="space-y-3">
+                  {(() => {
+                    const archived = (state.meetings || []).filter((m: any) => {
+                      const statusLower = String(m.status || "").trim().toLowerCase();
+                      if (statusLower !== "archived" && statusLower !== "completed") return false;
+
+                      // Search text
+                      if (archiveSearchText) {
+                        const search = archiveSearchText.toLowerCase();
+                        const matchTitle = String(m.title || "").toLowerCase().includes(search);
+                        const matchDesc = String(m.description || "").toLowerCase().includes(search);
+                        if (!matchTitle && !matchDesc) return false;
+                      }
+
+                      // Date filter
+                      if (archiveDateFilter) {
+                        const hasMatchDate = m.occurrenceDate === archiveDateFilter || 
+                          (m.meetingDates && Array.isArray(m.meetingDates) && m.meetingDates.includes(archiveDateFilter));
+                        if (!hasMatchDate) return false;
+                      }
+
+                      // Type filter
+                      if (archiveTypeFilter && String(m.type || "").toLowerCase() !== archiveTypeFilter.toLowerCase()) {
+                        return false;
+                      }
+
+                      // Organizer filter
+                      if (archiveOrganizerFilter && String(m.organizer || m.meetingOrganizer || "Admin Team").toLowerCase() !== archiveOrganizerFilter.toLowerCase()) {
+                        return false;
+                      }
+
+                      return true;
+                    });
+
+                    if (archived.length === 0) {
+                      return (
+                        <div className="py-8 text-center text-gray-450 text-xs font-medium bg-gray-50/50 rounded-xl border border-dashed">
+                          No archived or completed meetings match the filters.
+                        </div>
+                      );
+                    }
+
+                    // Export all filtered archived CSV function
+                    const exportFilteredToCSV = () => {
+                      const headers = ["ID", "Title", "Type", "Organizer", "Scheduled Date", "Time", "Duration", "Status"];
+                      const rows = archived.map(m => [
+                        m.id,
+                        m.title,
+                        m.type,
+                        m.organizer || "Admin Team",
+                        m.occurrenceDate || (m.meetingDates && m.meetingDates[0]) || "N/A",
+                        m.timeString || m.time || "N/A",
+                        m.duration || "N/A",
+                        m.status || "N/A"
+                      ]);
+
+                      const csvContent = "data:text/csv;charset=utf-8," 
+                        + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
+                      
+                      const encodedUri = encodeURI(csvContent);
+                      const link = document.createElement("a");
+                      link.setAttribute("href", encodedUri);
+                      link.setAttribute("download", `archived_meetings_report_${getLagosDateString(new Date())}.csv`);
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    };
+
+                    return (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap gap-2 justify-between items-center pb-2 bg-gray-50/70 p-3 rounded-xl border border-gray-150">
+                          <div className="flex items-center gap-3">
+                            <span className="text-[11px] text-gray-600 font-extrabold">
+                              Showing {archived.length} archived records
+                            </span>
+                            {archived.length > 2 && (
+                              <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const container = document.getElementById("archive-meetings-grid-container");
+                                    if (container) container.scrollTo({ top: 0, behavior: "smooth" });
+                                  }}
+                                  className="p-1 px-2 text-[#4B5E40] hover:bg-[#4B5E40]/10 hover:text-[#3d4d34] rounded-lg border border-[#4B5E40]/15 bg-white transition cursor-pointer flex items-center gap-1 shadow-2xs font-extrabold text-[10px]"
+                                  title="Scroll to Top"
+                                >
+                                  <ArrowUp className="w-3 h-3" />
+                                  <span>Top</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const container = document.getElementById("archive-meetings-grid-container");
+                                    if (container) container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+                                  }}
+                                  className="p-1 px-2 text-[#4B5E40] hover:bg-[#4B5E40]/10 hover:text-[#3d4d34] rounded-lg border border-[#4B5E40]/15 bg-white transition cursor-pointer flex items-center gap-1 shadow-2xs font-extrabold text-[10px]"
+                                  title="Scroll to Bottom"
+                                >
+                                  <ArrowDown className="w-3 h-3" />
+                                  <span>Bottom</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          
+                          <button
+                            type="button"
+                            onClick={exportFilteredToCSV}
+                            className="px-2.5 py-1 text-[10px] font-extrabold bg-[#4B5E40] text-white hover:bg-[#3d4d34] rounded-lg transition shadow-xs cursor-pointer flex items-center gap-1"
+                          >
+                            📥 Export Filtered Report (CSV)
+                          </button>
+                        </div>
+
+                        <div 
+                          id="archive-meetings-grid-container" 
+                          className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[600px] overflow-y-auto pr-2 scroll-smooth"
+                        >
+                          {archived.map((meeting: any) => {
+                            const mDate = meeting.occurrenceDate || (meeting.meetingDates && meeting.meetingDates[0]) || "N/A";
+                            const isCompleted = String(meeting.status || "").toLowerCase() === "completed";
+
+                            return (
+                              <div
+                                key={meeting.id}
+                                className="p-3.5 bg-gray-50/70 rounded-xl border border-gray-150 flex flex-col justify-between gap-3 text-xs"
+                              >
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-black text-gray-800 text-[12.5px] truncate max-w-[70%]">
+                                      {meeting.title}
+                                    </span>
+                                    <span className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-full border ${
+                                      isCompleted 
+                                        ? "bg-emerald-50 text-emerald-700 border-emerald-150" 
+                                        : "bg-gray-100 text-gray-600 border-gray-200"
+                                    }`}>
+                                      {meeting.status}
+                                    </span>
+                                  </div>
+
+                                  <p className="text-[11px] text-gray-500 font-medium line-clamp-2">
+                                    {meeting.description || "No description provided."}
+                                  </p>
+
+                                  <div className="grid grid-cols-2 gap-1.5 text-[10.5px] font-medium text-gray-600 pt-1">
+                                    <div>📅 {mDate}</div>
+                                    <div>🕒 {meeting.timeString || meeting.time || "N/A"}</div>
+                                    <div>⏳ {meeting.duration || "30 minutes"}</div>
+                                    <div>👤 {meeting.organizer || "Admin Team"}</div>
+                                  </div>
+                                </div>
+
+                                <div className="pt-2 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (expandedAttendanceMeetingId === meeting.id) {
+                                        setExpandedAttendanceMeetingId(null);
+                                      } else {
+                                        setExpandedAttendanceMeetingId(meeting.id);
+                                        setAttendanceFilterTab("all");
+                                      }
+                                    }}
+                                    className={`px-2.5 py-1 text-[10.5px] font-bold rounded-lg transition cursor-pointer ${
+                                      expandedAttendanceMeetingId === meeting.id
+                                        ? "bg-emerald-600 text-white hover:bg-emerald-700 font-extrabold shadow-sm"
+                                        : "bg-emerald-50 text-emerald-700 border border-emerald-100 hover:bg-emerald-100"
+                                    }`}
+                                  >
+                                    {expandedAttendanceMeetingId === meeting.id
+                                      ? "Close Attendance 📊"
+                                      : "View Attendance & Report 📊"}
+                                  </button>
+
+                                  {/* Single record CSV export */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const attLogs = (state.attendance || []).filter((a: any) => a.meetingId === meeting.id);
+                                      const eligibleMa = (state.meetingAssignments || []).filter((a: any) => a.meetingId === meeting.id);
+                                      const eligibleUids = eligibleMa.map((a: any) => a.userId);
+                                      const eligibleProfs = (state.profiles || []).filter((p: any) => p.role !== "admin" && (
+                                        eligibleUids.includes(p.id) ||
+                                        isUserEligibleForMeetingInBackend(p, meeting, state.meetingAssignments || []) ||
+                                        attLogs.some((a: any) => a.userId === p.id)
+                                      ));
+
+                                      const headers = ["User ID", "Full Name", "Username", "Track", "Status", "Timestamp"];
+                                      const rows = eligibleProfs.map((p: any) => {
+                                        const log = attLogs.find((l: any) => l.userId === p.id);
+                                        return [
+                                          p.id,
+                                          p.fullName || "",
+                                          p.username || "",
+                                          p.track || "General",
+                                          log ? log.status : "Absent",
+                                          log ? log.timestamp : "N/A"
+                                        ];
+                                      });
+
+                                      const csvContent = "data:text/csv;charset=utf-8," 
+                                        + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
+                                      
+                                      const encodedUri = encodeURI(csvContent);
+                                      const link = document.createElement("a");
+                                      link.setAttribute("href", encodedUri);
+                                      link.setAttribute("download", `meeting_attendance_${meeting.title.replace(/\s+/g, '_')}.csv`);
+                                      document.body.appendChild(link);
+                                      link.click();
+                                      document.body.removeChild(link);
+                                    }}
+                                    className="px-2 py-1 text-[10.5px] font-bold text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition cursor-pointer"
+                                  >
+                                    Export Meeting CSV
+                                  </button>
+                                </div>
+
+                                {/* Attendance Tracker expanded drawer */}
+                                {expandedAttendanceMeetingId === meeting.id && (() => {
+                                  const eligibleAssignments = (state.meetingAssignments || []).filter(
+                                    (a: any) => a.meetingId === meeting.id
+                                  );
+                                  const eligibleUserIds = eligibleAssignments.map((a: any) => a.userId);
+                                  
+                                  const eligibleProfiles = (state.profiles || []).filter(
+                                    (p: any) => p.role !== "admin" && (
+                                      eligibleUserIds.includes(p.id) ||
+                                      isUserEligibleForMeetingInBackend(p, meeting, state.meetingAssignments || []) ||
+                                      (state.attendance || []).some((a: any) => a.meetingId === meeting.id && a.userId === p.id)
+                                    )
+                                  );
+                                  
+                                  const attendanceLogs = (state.attendance || []).filter(
+                                    (a: any) => a.meetingId === meeting.id
+                                  );
+                                  
+                                  const list = eligibleProfiles.map((p: any) => {
+                                    const log = attendanceLogs.find((l: any) => l.userId === p.id);
+                                    return {
+                                      id: p.id,
+                                      fullName: p.fullName,
+                                      username: p.username,
+                                      learningLevel: p.learningLevel || p.techExperience || "Apprentice level 1",
+                                      track: p.track || "General",
+                                      attended: !!log,
+                                      status: log ? log.status : "Absent",
+                                      timestamp: log ? log.timestamp : null
+                                    };
+                                  });
+
+                                  const attendedList = list.filter((item: any) => item.attended);
+                                  const absentList = list.filter((item: any) => !item.attended);
+                                  
+                                  const displayedList = 
+                                    attendanceFilterTab === "attended" 
+                                      ? attendedList 
+                                      : attendanceFilterTab === "absent" 
+                                        ? absentList 
+                                        : list;
+
+                                  const attendanceRate = list.length > 0 
+                                    ? Math.round((attendedList.length / list.length) * 100) 
+                                    : 0;
+
+                                  return (
+                                    <div className="mt-3 p-3 bg-white border border-gray-150 rounded-xl space-y-3 animate-slide-up">
+                                      <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                                        <div className="space-y-0.5">
+                                          <h5 className="font-extrabold text-[11px] text-gray-800">Attendance Report</h5>
+                                          <p className="text-[10px] text-gray-400">Total assigned: {list.length} trainees</p>
+                                        </div>
+                                        <div className="text-right">
+                                          <div className="font-black text-sm text-[#4B5E40]">{attendanceRate}%</div>
+                                          <div className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">Attendance Rate</div>
+                                        </div>
+                                      </div>
+
+                                      {/* Filter tabs */}
+                                      <div className="flex bg-gray-50 border border-gray-100 p-0.5 rounded-lg text-[10px] font-extrabold">
+                                        <button
+                                          type="button"
+                                          onClick={() => setAttendanceFilterTab("all")}
+                                          className={`flex-1 py-1 rounded-md text-center transition ${
+                                            attendanceFilterTab === "all"
+                                              ? "bg-white text-gray-850 shadow-2xs font-black"
+                                              : "text-gray-500 hover:text-gray-950"
+                                          }`}
+                                        >
+                                          All ({list.length})
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setAttendanceFilterTab("attended")}
+                                          className={`flex-1 py-1 rounded-md text-center transition ${
+                                            attendanceFilterTab === "attended"
+                                              ? "bg-white text-emerald-700 shadow-2xs font-black"
+                                              : "text-gray-500 hover:text-gray-950"
+                                          }`}
+                                        >
+                                          Attended ({attendedList.length})
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setAttendanceFilterTab("absent")}
+                                          className={`flex-1 py-1 rounded-md text-center transition ${
+                                            attendanceFilterTab === "absent"
+                                              ? "bg-white text-rose-600 shadow-2xs font-black"
+                                              : "text-gray-500 hover:text-gray-950"
+                                          }`}
+                                        >
+                                          Absent ({absentList.length})
+                                        </button>
+                                      </div>
+
+                                      {/* Display List */}
+                                      <div className="space-y-1.5 max-h-[170px] overflow-y-auto pr-1">
+                                        {displayedList.length === 0 ? (
+                                          <div className="text-center py-4 text-gray-400 text-[10px] font-medium italic">
+                                            No records match this filter.
+                                          </div>
+                                        ) : (
+                                          displayedList.map((item: any) => {
+                                            const initials = (item.fullName || item.username || "U")
+                                              .split(" ")
+                                              .map((n: string) => n[0])
+                                              .join("")
+                                              .substring(0, 2)
+                                              .toUpperCase();
+
+                                            return (
+                                              <div 
+                                                key={item.id}
+                                                className="flex items-center justify-between p-1.5 hover:bg-gray-50 rounded-lg border border-gray-100 bg-white transition gap-2"
+                                              >
+                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black shrink-0 ${
+                                                    item.attended 
+                                                      ? "bg-[#4B5E40] text-white" 
+                                                      : "bg-gray-200 text-gray-600"
+                                                  }`}>
+                                                    {initials}
+                                                  </div>
+                                                  <div className="min-w-0">
+                                                    <div className="font-extrabold text-[11px] text-gray-800 truncate">
+                                                      {item.fullName}
+                                                    </div>
+                                                    <div className="text-[9px] text-gray-400 truncate">
+                                                      @{item.username} • {item.track}
+                                                    </div>
+                                                  </div>
+                                                </div>
+
+                                                <div className="flex flex-col items-end shrink-0 gap-0.5">
+                                                  <span className={`px-1.5 py-0.5 text-[8.5px] font-extrabold rounded-md border tracking-wide uppercase ${
+                                                    item.status === "Attended" || item.status === "on time"
+                                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                                      : item.status === "Late"
+                                                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                                                        : "bg-rose-50 text-rose-700 border-rose-200"
+                                                  }`}>
+                                                    {item.status}
+                                                  </span>
+                                                  {item.attended && item.timestamp && (
+                                                    <span className="text-[8.5px] text-gray-400">
+                                                      {(() => {
+                                                        try {
+                                                          const d = new Date(item.timestamp);
+                                                          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                                        } catch (_) {
+                                                          return "";
+                                                        }
+                                                      })()}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          })
                                         )}
                                       </div>
                                     </div>
                                   );
-                                })
-                              )}
-                            </div>
+                                })()}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {archived.length > 2 && (
+                          <div className="flex justify-center pt-2 border-t border-gray-100 mt-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const container = document.getElementById("archive-meetings-grid-container");
+                                if (container) container.scrollTo({ top: 0, behavior: "smooth" });
+                              }}
+                              className="px-3.5 py-1.5 text-[10px] font-black bg-white hover:bg-gray-50 text-[#4B5E40] border border-gray-200 rounded-lg transition shadow-2xs cursor-pointer flex items-center gap-1.5"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" /> Back to Top of Repository
+                            </button>
                           </div>
-                        );
-                      })()}
-                    </div>
-                  ))}
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
+      </div>
       )}
 
       {/* C. DRILLS PUBLISHING & GRADING BOARD */}
@@ -5102,6 +6449,97 @@ export default function AdminPanel({
       {/* E. AUTOMATED 00:00 WAT CRON ENGINE (Section 4.3) */}
       {adminTab === "cron" && (
         <div className="space-y-6">
+          {/* MEETING DIRECTORY SYNCHRONIZATION & AUTOMATIC SCHEDULING CONFIG */}
+          <div
+            className="bg-white rounded-2xl border border-gray-150 p-6 max-w-xl mx-auto space-y-5 animate-fade-in"
+            id="meeting-sync-panel"
+          >
+            <div className="text-center space-y-1">
+              <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto text-emerald-600 shadow-2xs">
+                <RefreshCw className="w-6 h-6 text-[#4B5E40]" />
+              </div>
+              <h3 className="font-extrabold text-sm sm:text-base text-gray-950">
+                Corporate Directory Synchronisation
+              </h3>
+              <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                Connect and synchronize newly created and updated meetings from the Bincom Corporate Server database.
+              </p>
+            </div>
+
+            {/* AUTOMATIC MIDNIGHT SYNC CONFIGURATION */}
+            <div className="p-4 rounded-xl bg-gray-50 border border-gray-200/60 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-bold text-xs text-slate-800">
+                    Automatic Midnight Synchronisation
+                  </h4>
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Trigger automated synchronization every night at 00:00 WAT.
+                  </p>
+                </div>
+                <button
+                  id="admin-toggle-midnight-sync"
+                  type="button"
+                  onClick={() => handleToggleMidnightSync(!state.autoMidnightSyncEnabled)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                    state.autoMidnightSyncEnabled ? "bg-[#4B5E40]" : "bg-gray-300"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                      state.autoMidnightSyncEnabled ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="text-[10px] flex items-center gap-1.5 font-bold pt-1 border-t border-gray-200/50">
+                {state.autoMidnightSyncEnabled ? (
+                  <span className="text-emerald-700 flex items-center gap-1">
+                    🟢 Automatic Midnight Sync is ACTIVE (Runs at 00:00 WAT)
+                  </span>
+                ) : (
+                  <span className="text-amber-700 flex items-center gap-1">
+                    🔴 Automatic Midnight Sync is DISABLED (Manual Only)
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* MANUAL TRIGGER */}
+            <div className="text-center bg-[#F8FAF8] p-4 rounded-xl border border-dashed border-gray-250">
+              <button
+                id="admin-trigger-sync-btn"
+                onClick={handleTriggerSync}
+                disabled={syncRunning}
+                className="px-6 py-2.5 bg-[#4B5E40] hover:bg-[#3d4d34] disabled:bg-gray-200 disabled:text-gray-400 text-white font-extrabold text-xs rounded-xl shadow transition cursor-pointer inline-flex items-center gap-1.5"
+              >
+                {syncRunning ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Synchronising...
+                  </>
+                ) : (
+                  "🔄 Manually Synchronise Meetings"
+                )}
+              </button>
+            </div>
+
+            {/* Sync Console Logs */}
+            {syncLogs.length > 0 && (
+              <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 text-left font-mono text-[10px] space-y-1.5 text-emerald-400 leading-normal max-h-56 overflow-y-auto block shadow-inner">
+                <span className="text-gray-500 select-none">
+                  // SYSTEM CONSOLE: MEETING DIRECTORY SYNC LOGS
+                </span>
+                {syncLogs.map((log, index) => (
+                  <p key={index} className="block whitespace-pre-wrap">
+                    {log}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div
             className="bg-white rounded-2xl border border-gray-150 p-6 max-w-xl mx-auto space-y-5 animate-fade-in"
             id="cron-tab-root"
@@ -5355,6 +6793,50 @@ export default function AdminPanel({
                   </div>
                 )}
 
+                {meetingToDelete && meetingToDelete.seriesId && (
+                  <div className="bg-amber-50/50 p-3.5 rounded-xl border border-amber-150 space-y-2 text-left text-xs font-semibold text-gray-700">
+                    <div className="text-[9px] font-bold text-amber-600 uppercase tracking-wide">
+                      Recurrence Deletion Options:
+                    </div>
+                    <p className="text-[10px] text-gray-500 font-medium mb-1">
+                      This meeting is part of a recurring series. Choose how you want to apply the deletion:
+                    </p>
+                    <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                      <input
+                        type="radio"
+                        name="delete-recurrence-option"
+                        value="single"
+                        checked={deleteRecurrenceOption === "single"}
+                        onChange={() => setDeleteRecurrenceOption("single")}
+                        className="text-[#4B5E40] focus:ring-[#4B5E40] h-3.5 w-3.5 cursor-pointer"
+                      />
+                      <span>Delete only this occurrence</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                      <input
+                        type="radio"
+                        name="delete-recurrence-option"
+                        value="future"
+                        checked={deleteRecurrenceOption === "future"}
+                        onChange={() => setDeleteRecurrenceOption("future")}
+                        className="text-[#4B5E40] focus:ring-[#4B5E40] h-3.5 w-3.5 cursor-pointer"
+                      />
+                      <span>Delete this and all future occurrences</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                      <input
+                        type="radio"
+                        name="delete-recurrence-option"
+                        value="all"
+                        checked={deleteRecurrenceOption === "all"}
+                        onChange={() => setDeleteRecurrenceOption("all")}
+                        className="text-[#4B5E40] focus:ring-[#4B5E40] h-3.5 w-3.5 cursor-pointer"
+                      />
+                      <span>Delete the entire meeting series</span>
+                    </label>
+                  </div>
+                )}
+
                 <div className="flex gap-2.5 justify-end pt-2 border-t border-gray-100">
                   <button
                     type="button"
@@ -5369,7 +6851,7 @@ export default function AdminPanel({
                     type="button"
                     id="confirm-delete-meeting-btn"
                     disabled={isDeletingMeeting}
-                    onClick={() => handleDeleteMeeting(meetingToDeleteId)}
+                    onClick={() => handleDeleteMeeting(meetingToDeleteId, deleteRecurrenceOption)}
                     className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none transition flex items-center gap-1.5 justify-center"
                   >
                     {isDeletingMeeting ? (

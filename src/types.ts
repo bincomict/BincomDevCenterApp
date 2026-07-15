@@ -66,6 +66,13 @@ export interface Meeting {
   organizer?: string;
   status?: string;
   description?: string;
+  seriesId?: string;
+  occurrenceDate?: string;
+  isRecurring?: boolean;
+  recurrenceFrequency?: string;
+  recurrenceStartDate?: string;
+  recurrenceEndDate?: string;
+  recurrenceCustomInterval?: number;
 }
 
 export interface AttendanceRecord {

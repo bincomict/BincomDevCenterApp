@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import firebaseAppletConfig from "../firebase-applet-config.json";
 
 // Explicit static references so Vite's static define/replacement works perfectly
@@ -34,11 +34,13 @@ const firebaseConfig = {
 };
 
 // We directly target the default database "(default)" as requested, with no need for environment variable fallback
-const dbId = "(default)";
+const dbId = viteDatabaseId || nodeDatabaseId || firebaseAppletConfig.firestoreDatabaseId || "(default)";
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+}, dbId);
 
 console.log("🔥 Firebase initialized successfully!");
 console.log("📍 Project ID in use:", firebaseConfig.projectId);
