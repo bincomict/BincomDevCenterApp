@@ -3,6 +3,8 @@ import {
   doc, 
   getDoc, 
   getDocs, 
+  getDocFromCache,
+  getDocsFromCache,
   setDoc, 
   addDoc, 
   updateDoc, 
@@ -10,7 +12,8 @@ import {
   onSnapshot, 
   query, 
   where,
-  writeBatch
+  writeBatch,
+  deleteField
 } from "firebase/firestore";
 import { 
   signInWithEmailAndPassword, 
@@ -19,7 +22,7 @@ import {
   onAuthStateChanged
 } from "firebase/auth";
 import { db, auth } from "./firebase";
-import { Profile, Meeting, AttendanceRecord, WeeklyDrill, WeeklyDrillSubmission, MeetingAssignment, MeetingHistoryRecord } from "./types";
+import { Profile, Meeting, AttendanceRecord, WeeklyDrill, WeeklyDrillSubmission, MeetingAssignment, MeetingHistoryRecord, QueuedMeetingUpdate } from "./types";
 
 export enum OperationType {
   CREATE = 'create',
@@ -391,12 +394,21 @@ export const autoArchiveCompletedMeetings = async (
 
   console.log(`Processing ${meetingsToProcess.length} completed/archived meetings for history/attendance preservation...`);
 
-  const batch = writeBatch(db);
+  const batches: any[] = [];
+  let currentBatch = writeBatch(db);
+  let batchCount = 0;
+  const writeBatchSize = 400;
 
   meetingsToProcess.forEach(({ meeting: m, shouldUpdateStatus }) => {
     if (shouldUpdateStatus) {
       const docRef = doc(db, "meetings", m.id);
-      batch.update(docRef, { status: "Completed" });
+      currentBatch.update(docRef, { status: "Completed" });
+      batchCount++;
+      if (batchCount >= writeBatchSize) {
+        batches.push(currentBatch);
+        currentBatch = writeBatch(db);
+        batchCount = 0;
+      }
     }
 
     const occurrenceDate = m.occurrenceDate || (m.meetingDates && m.meetingDates[0]) || todayStr;
@@ -424,7 +436,13 @@ export const autoArchiveCompletedMeetings = async (
       targetTeamTrackEligibility: m.targetTeamTrackEligibility || []
     };
 
-    batch.set(doc(db, "meetingHistory", historyId), historyData, { merge: true });
+    currentBatch.set(doc(db, "meetingHistory", historyId), historyData, { merge: true });
+    batchCount++;
+    if (batchCount >= writeBatchSize) {
+      batches.push(currentBatch);
+      currentBatch = writeBatch(db);
+      batchCount = 0;
+    }
 
     const eligibleUsers = profiles.filter(u => isUserEligibleForMeetingInBackend(u, m, assignments));
     
@@ -451,12 +469,24 @@ export const autoArchiveCompletedMeetings = async (
           track: user.track || "General",
           meetingDate: occurrenceDate
         };
-        batch.set(doc(db, "attendance", missedRecordId), missedRecord, { merge: true });
+        currentBatch.set(doc(db, "attendance", missedRecordId), missedRecord, { merge: true });
+        batchCount++;
+        if (batchCount >= writeBatchSize) {
+          batches.push(currentBatch);
+          currentBatch = writeBatch(db);
+          batchCount = 0;
+        }
       }
     });
   });
 
-  await batch.commit();
+  if (batchCount > 0) {
+    batches.push(currentBatch);
+  }
+
+  if (batches.length > 0) {
+    await Promise.all(batches.map(b => b.commit()));
+  }
 };
 
 export const synchronizeMeetings = async (): Promise<{ added: string[]; updated: string[] }> => {
@@ -464,24 +494,96 @@ export const synchronizeMeetings = async (): Promise<{ added: string[]; updated:
   const added: string[] = [];
   const updated: string[] = [];
 
-  for (const m of EXTERNAL_MEETINGS_POOL) {
-    const docRef = doc(db, "meetings", m.id);
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
+  let meetingsToSync: any[] = [];
+  try {
+    const poolSnap = await getDocs(collection(db, "externalMeetingsPool"));
+    if (poolSnap.empty) {
+      console.log("[synchronizeMeetings] Firestore externalMeetingsPool is empty. Backing up static EXTERNAL_MEETINGS_POOL to Firestore...");
+      // Backup/seed pool to firestore
+      const backupBatch = writeBatch(db);
+      EXTERNAL_MEETINGS_POOL.forEach((m) => {
+        backupBatch.set(doc(db, "externalMeetingsPool", m.id), m);
+      });
+      await backupBatch.commit();
+      meetingsToSync = EXTERNAL_MEETINGS_POOL;
+    } else {
+      console.log("[synchronizeMeetings] Loaded corporate meetings from Firestore externalMeetingsPool backup.");
+      meetingsToSync = poolSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+  } catch (poolErr: any) {
+    console.warn("[synchronizeMeetings] Failed to query Firestore externalMeetingsPool, falling back to static pool:", poolErr);
+    const errMsg = poolErr.message || String(poolErr);
+    if (errMsg.toLowerCase().includes("permission") || errMsg.toLowerCase().includes("insufficient")) {
+      handleFirestoreError(poolErr, OperationType.LIST, "externalMeetingsPool");
+    }
+    meetingsToSync = EXTERNAL_MEETINGS_POOL;
+  }
+
+  // --- Optimization: Fetch all existing meetings in a single query instead of individual getDoc calls ---
+  const existsMap: Record<string, boolean> = {};
+  try {
+    const existingSnap = await getDocs(collection(db, "meetings"));
+    existingSnap.docs.forEach((d) => {
+      existsMap[d.id] = true;
+    });
+  } catch (err: any) {
+    console.warn("[synchronizeMeetings] Failed to query existing meetings from server, trying cache:", err);
+    try {
+      const existingSnap = await getDocsFromCache(collection(db, "meetings"));
+      existingSnap.docs.forEach((d) => {
+        existsMap[d.id] = true;
+      });
+    } catch (cacheErr) {
+      console.warn("[synchronizeMeetings] Cache query failed too, will assume none exist:", cacheErr);
+    }
+  }
+
+  const batch = writeBatch(db);
+  let batchCount = 0;
+
+  for (const m of meetingsToSync) {
+    const isAlreadyExisted = !!existsMap[m.id];
+    if (isAlreadyExisted) {
       updated.push(m.title);
     } else {
       added.push(m.title);
     }
+
     const todayStr = getLagosDateString(new Date());
     const todayDayName = getLagosDayOfWeek(new Date());
     const hasTodayDate = m.meetingDates && m.meetingDates.includes(todayStr);
     const hasTodayDay = m.scheduleDays && m.scheduleDays.includes(todayDayName);
     const isActive = hasTodayDate || hasTodayDay;
 
-    await setDoc(docRef, { ...m, isActive }, { merge: true });
+    batch.set(doc(db, "meetings", m.id), { ...m, isActive }, { merge: true });
+    batchCount++;
+    if (batchCount >= 400) {
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, "meetings");
+      }
+      batchCount = 0;
+    }
   }
 
-  await syncMeetingAssignmentsForMeetings(EXTERNAL_MEETINGS_POOL);
+  if (batchCount > 0) {
+    try {
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, "meetings");
+    }
+  }
+
+  try {
+    await syncMeetingAssignmentsForMeetings(meetingsToSync);
+  } catch (syncErr: any) {
+    console.warn("[synchronizeMeetings] syncMeetingAssignmentsForMeetings failed:", syncErr);
+    const errMsg = syncErr.message || String(syncErr);
+    if (errMsg.toLowerCase().includes("permission") || errMsg.toLowerCase().includes("insufficient")) {
+      handleFirestoreError(syncErr, OperationType.WRITE, "meetingAssignments");
+    }
+  }
 
   return { added, updated };
 };
@@ -511,41 +613,74 @@ export const subscribeToAllState = (
     meetingAssignments: [],
     meetingHistory: [],
     attendanceAuditLogs: [],
+    queuedMeetingUpdates: [],
     tasks: [],
     microservices: [],
     careerPathways: null,
     autoMidnightSyncEnabled: false
   };
 
-  const collectionsToListen = [
-    "profiles",
-    "meetings",
-    "attendance",
-    "standups",
-    "personalDevelopment",
-    "techUpdates",
-    "weeklyDrills",
-    "drillSubmissions",
-    "socialLogs",
-    "projects",
-    "dailyReports",
-    "reminders",
-    "meetingAssignments",
-    "meetingHistory",
-    "attendanceAuditLogs",
-    "metadata"
-  ];
+  const isAdmin = userProfile?.role === "admin";
+
+  const collectionsToListen = isAdmin
+    ? [
+        "profiles",
+        "meetings",
+        "attendance",
+        "standups",
+        "personalDevelopment",
+        "techUpdates",
+        "weeklyDrills",
+        "drillSubmissions",
+        "socialLogs",
+        "projects",
+        "dailyReports",
+        "reminders",
+        "meetingAssignments",
+        "meetingHistory",
+        "attendanceAuditLogs",
+        "queuedMeetingUpdates",
+        "metadata"
+      ]
+    : [
+        "profiles", // Live subscription only to own profile
+        "meetings",
+        "attendance",
+        "standups",
+        "personalDevelopment",
+        "techUpdates",
+        "drillSubmissions",
+        "socialLogs",
+        "dailyReports",
+        "reminders",
+        "meetingAssignments",
+        "metadata"
+      ];
+
+  const collectionsToFetchOnce = isAdmin
+    ? []
+    : ["profiles", "meetingHistory", "projects", "weeklyDrills"];
 
   const unsubscribes = collectionsToListen.map(colName => {
-    const isAdmin = userProfile?.role === "admin";
     let queryRef: any;
 
-    if (colName === "attendanceAuditLogs") {
+    if (colName === "queuedMeetingUpdates") {
       if (!isAdmin) {
-        // Non-admins have no read permission for audit logs, bypass query
+        return () => {};
+      }
+      queryRef = collection(db, "queuedMeetingUpdates");
+    } else if (colName === "attendanceAuditLogs") {
+      if (!isAdmin) {
         return () => {};
       }
       queryRef = collection(db, "attendanceAuditLogs");
+    } else if (colName === "profiles") {
+      if (isAdmin) {
+        queryRef = collection(db, "profiles");
+      } else {
+        // Standard users only subscribe to their own profile in real-time
+        queryRef = query(collection(db, "profiles"), where("id", "==", userId));
+      }
     } else if (colName === "attendance") {
       if (isAdmin) {
         queryRef = collection(db, "attendance");
@@ -557,6 +692,20 @@ export const subscribeToAllState = (
         queryRef = collection(db, "reminders");
       } else {
         queryRef = query(collection(db, "reminders"), where("userId", "==", userId));
+      }
+    } else if (
+      colName === "standups" ||
+      colName === "personalDevelopment" ||
+      colName === "techUpdates" ||
+      colName === "drillSubmissions" ||
+      colName === "socialLogs" ||
+      colName === "dailyReports" ||
+      colName === "meetingAssignments"
+    ) {
+      if (isAdmin) {
+        queryRef = collection(db, colName);
+      } else {
+        queryRef = query(collection(db, colName), where("userId", "==", userId));
       }
     } else {
       queryRef = collection(db, colName);
@@ -577,6 +726,13 @@ export const subscribeToAllState = (
           state.careerPathways = appConfig.careerPathways || null;
           state.autoMidnightSyncEnabled = appConfig.autoMidnightSyncEnabled !== undefined ? appConfig.autoMidnightSyncEnabled : false;
         }
+      } else if (colName === "profiles" && !isAdmin) {
+        // Standard user: merge real-time update of own profile with one-time fetched profiles list
+        const ownLive = docs[0] || null;
+        if (ownLive) {
+          const otherProfiles = state.profiles.filter((p: any) => p.id !== userId);
+          state.profiles = [ownLive, ...otherProfiles];
+        }
       } else {
         state[colName] = docs;
       }
@@ -588,6 +744,43 @@ export const subscribeToAllState = (
       handleFirestoreError(error, OperationType.LIST, colName);
     });
   });
+
+  // Perform one-time cache-first fetches for non-admin static or large collections
+  if (!isAdmin) {
+    collectionsToFetchOnce.forEach(async (colName) => {
+      try {
+        const colRef = collection(db, colName);
+        let snapshot;
+        try {
+          snapshot = await getDocsFromCache(colRef);
+        } catch (cacheErr) {
+          // Ignore cache query failure, fetch from server next
+        }
+        if (!snapshot || snapshot.empty) {
+          snapshot = await getDocs(colRef);
+        }
+        loadedCollections.add(colName);
+        const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        if (colName === "profiles") {
+          const otherProfiles = docs.filter((p: any) => p.id !== userId);
+          const ownLive = state.profiles.find((p: any) => p.id === userId);
+          state.profiles = ownLive ? [ownLive, ...otherProfiles] : docs;
+        } else {
+          state[colName] = docs;
+        }
+        dispatchCompiledState();
+      } catch (err: any) {
+        console.warn(`[subscribeToAllState] One-time fetch failed for ${colName}:`, err);
+        // Fallback to empty array to allow the app to function
+        loadedCollections.add(colName);
+        if (colName !== "profiles" || state.profiles.length === 0) {
+          state[colName] = [];
+        }
+        dispatchCompiledState();
+      }
+    });
+  }
 
   const dispatchCompiledState = () => {
     if (!userProfile) return;
@@ -833,7 +1026,7 @@ export const subscribeToAllState = (
         console.error("Error in automated midnight sync interval check:", e);
       }
     }
-  }, 30000);
+  }, 300000); // 5 minutes instead of 30 seconds to conserve reads/writes
 
   return () => {
     clearInterval(checkInterval);
@@ -1033,8 +1226,67 @@ export const dismissAllReminders = async (userId: string): Promise<void> => {
   await batch.commit();
 };
 
-export const deleteMeetingAssignmentsForMeetings = async (meetingIds: string[]): Promise<void> => {
+export const deleteMeetingAssignmentsForMeetings = async (
+  meetingIds: string[],
+  profiles?: Profile[]
+): Promise<void> => {
   if (!meetingIds || meetingIds.length === 0) return;
+
+  let activeProfiles = profiles;
+  if (!activeProfiles || activeProfiles.length === 0) {
+    try {
+      const snap = await getDocs(collection(db, "profiles"));
+      activeProfiles = snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Profile[];
+    } catch (err) {
+      console.warn("[deleteMeetingAssignmentsForMeetings] Failed to query profiles from server:", err);
+      try {
+        const snap = await getDocsFromCache(collection(db, "profiles"));
+        activeProfiles = snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Profile[];
+      } catch (cacheErr) {
+        console.warn("[deleteMeetingAssignmentsForMeetings] Failed to query profiles from cache too, trying fallback query delete:", cacheErr);
+        activeProfiles = [];
+      }
+    }
+  }
+
+  // Only use deterministic query-less deletion if the cross-product is small (<= 150)
+  // to avoid sending thousands of redundant delete requests for non-existent assignments.
+  const useDeterministic = activeProfiles && activeProfiles.length > 0 && (meetingIds.length * activeProfiles.length <= 150);
+
+  if (useDeterministic && activeProfiles) {
+    const batches: any[] = [];
+    let currentBatch = writeBatch(db);
+    let count = 0;
+
+    for (const mId of meetingIds) {
+      for (const p of activeProfiles) {
+        const assignmentId = `asg_${mId}_${p.id}`;
+        currentBatch.delete(doc(db, "meetingAssignments", assignmentId));
+        count++;
+        if (count >= 400) {
+          batches.push(currentBatch);
+          currentBatch = writeBatch(db);
+          count = 0;
+        }
+      }
+    }
+
+    if (count > 0) {
+      batches.push(currentBatch);
+    }
+
+    if (batches.length > 0) {
+      try {
+        await Promise.all(batches.map(b => b.commit()));
+      } catch (commitErr) {
+        console.error("[deleteMeetingAssignments] Commit parallel batches failed:", commitErr);
+      }
+    }
+    return;
+  }
+
+  // Fallback / standard query-based delete for large series (FETCH & DELETE ONLY EXISTING)
+  let docsToDelete: any[] = [];
 
   const chunkSize = 30;
   const chunks = [];
@@ -1042,41 +1294,97 @@ export const deleteMeetingAssignmentsForMeetings = async (meetingIds: string[]):
     chunks.push(meetingIds.slice(i, i + chunkSize));
   }
 
-  for (const chunk of chunks) {
+  // Fetch all chunks in parallel to optimize scheduling speed
+  const snapPromises = chunks.map(async (chunk) => {
     const q = query(
       collection(db, "meetingAssignments"),
       where("meetingId", "in", chunk)
     );
-    const snap = await getDocs(q);
-    if (!snap.empty) {
-      let batch = writeBatch(db);
-      let count = 0;
-      for (const docSnap of snap.docs) {
-        batch.delete(docSnap.ref);
-        count++;
-        if (count >= 400) {
-          await batch.commit();
-          batch = writeBatch(db);
-          count = 0;
-        }
+    try {
+      return await getDocs(q);
+    } catch (err: any) {
+      console.warn("[deleteMeetingAssignments] Failed to query meetingAssignments from server:", err);
+      try {
+        return await getDocsFromCache(q);
+      } catch (cacheErr) {
+        console.warn("[deleteMeetingAssignments] Failed to query from cache too, skipping chunk:", cacheErr);
+        return null;
       }
-      if (count > 0) {
-        await batch.commit();
-      }
+    }
+  });
+
+  const snaps = await Promise.all(snapPromises);
+  for (const snap of snaps) {
+    if (snap && !snap.empty) {
+      docsToDelete.push(...snap.docs);
+    }
+  }
+
+  if (docsToDelete.length === 0) return;
+
+  const batches: any[] = [];
+  let currentBatch = writeBatch(db);
+  let count = 0;
+
+  for (const docSnap of docsToDelete) {
+    currentBatch.delete(docSnap.ref);
+    count++;
+    if (count >= 400) {
+      batches.push(currentBatch);
+      currentBatch = writeBatch(db);
+      count = 0;
+    }
+  }
+
+  if (count > 0) {
+    batches.push(currentBatch);
+  }
+
+  if (batches.length > 0) {
+    try {
+      await Promise.all(batches.map(b => b.commit()));
+    } catch (commitErr) {
+      console.error("[deleteMeetingAssignments] Commit parallel batches failed:", commitErr);
     }
   }
 };
 
-export const syncMeetingAssignmentsForMeetings = async (meetingsToSync: any[]): Promise<void> => {
+export const syncMeetingAssignmentsForMeetings = async (
+  meetingsToSync: any[],
+  skipDelete = false,
+  profiles?: Profile[]
+): Promise<void> => {
   if (!meetingsToSync || meetingsToSync.length === 0) return;
 
+  let activeProfiles: Profile[] = profiles || [];
+  if (activeProfiles.length === 0) {
+    try {
+      const profilesSnap = await getDocs(collection(db, "profiles"));
+      activeProfiles = profilesSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Profile[];
+    } catch (err) {
+      console.warn("[syncMeetingAssignmentsForMeetings] Failed to fetch profiles from server:", err);
+      try {
+        const profilesSnap = await getDocsFromCache(collection(db, "profiles"));
+        activeProfiles = profilesSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Profile[];
+      } catch (cacheErr) {
+        console.warn("[syncMeetingAssignmentsForMeetings] Failed to fetch profiles from cache too, using empty array:", cacheErr);
+      }
+    }
+  }
+
   const meetingIds = meetingsToSync.map(m => m.id);
-  await deleteMeetingAssignmentsForMeetings(meetingIds);
 
-  const profilesSnap = await getDocs(collection(db, "profiles"));
-  const activeProfiles = profilesSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Profile[];
+  // Perform assignment deletion
+  if (!skipDelete) {
+    try {
+      await deleteMeetingAssignmentsForMeetings(meetingIds, activeProfiles);
+    } catch (err) {
+      console.warn("[syncMeetingAssignmentsForMeetings] Delete existing assignments failed:", err);
+    }
+  }
 
-  let batch = writeBatch(db);
+  const batches: any[] = [];
+  let currentBatch = writeBatch(db);
   let batchCount = 0;
   const writeBatchSize = 400;
 
@@ -1126,20 +1434,14 @@ export const syncMeetingAssignmentsForMeetings = async (meetingsToSync: any[]): 
       if (hasDirectAssignments) {
         eligible = isDirectAssigned;
       } else {
-        if (teamTrackSpecified && userLevelSpecified) {
-          eligible = isTrackMatch && isLevelMatch;
-        } else if (teamTrackSpecified) {
-          eligible = isTrackMatch;
-        } else if (userLevelSpecified) {
-          eligible = isLevelMatch;
-        } else {
-          eligible = true;
-        }
+        // Optimization: Do NOT write meetingAssignments documents for rule-based matching.
+        // The frontend and backend evaluate level & track eligibility dynamically on the fly.
+        eligible = false;
       }
 
       if (eligible) {
         const assignmentId = `asg_${meeting.id}_${profile.id}`;
-        batch.set(doc(db, "meetingAssignments", assignmentId), {
+        currentBatch.set(doc(db, "meetingAssignments", assignmentId), {
           id: assignmentId,
           meetingId: meeting.id,
           userId: profile.id,
@@ -1150,8 +1452,8 @@ export const syncMeetingAssignmentsForMeetings = async (meetingsToSync: any[]): 
 
         batchCount++;
         if (batchCount >= writeBatchSize) {
-          await batch.commit();
-          batch = writeBatch(db);
+          batches.push(currentBatch);
+          currentBatch = writeBatch(db);
           batchCount = 0;
         }
       }
@@ -1159,7 +1461,15 @@ export const syncMeetingAssignmentsForMeetings = async (meetingsToSync: any[]): 
   }
 
   if (batchCount > 0) {
-    await batch.commit();
+    batches.push(currentBatch);
+  }
+
+  if (batches.length > 0) {
+    try {
+      await Promise.all(batches.map(b => b.commit()));
+    } catch (commitErr) {
+      console.error("[syncMeetingAssignmentsForMeetings] Commit parallel batches failed:", commitErr);
+    }
   }
 };
 
@@ -1171,14 +1481,29 @@ export const syncMeetingAssignments = async (): Promise<void> => {
   const activeMeetings = meetingsSnap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as any[];
 
   const existingSnap = await getDocs(collection(db, "meetingAssignments"));
-  const clearBatch = writeBatch(db);
+  const clearBatches: any[] = [];
+  let currentClearBatch = writeBatch(db);
+  let clearCount = 0;
+
   existingSnap.docs.forEach(docSnap => {
-    clearBatch.delete(docSnap.ref);
+    currentClearBatch.delete(docSnap.ref);
+    clearCount++;
+    if (clearCount >= 400) {
+      clearBatches.push(currentClearBatch);
+      currentClearBatch = writeBatch(db);
+      clearCount = 0;
+    }
   });
-  await clearBatch.commit();
+  if (clearCount > 0) {
+    clearBatches.push(currentClearBatch);
+  }
+  if (clearBatches.length > 0) {
+    await Promise.all(clearBatches.map(b => b.commit()));
+  }
 
   const writeBatchSize = 400;
-  let batch = writeBatch(db);
+  const batches: any[] = [];
+  let currentBatch = writeBatch(db);
   let batchCount = 0;
 
   for (const meeting of activeMeetings) {
@@ -1227,32 +1552,26 @@ export const syncMeetingAssignments = async (): Promise<void> => {
       if (hasDirectAssignments) {
         eligible = isDirectAssigned;
       } else {
-        if (teamTrackSpecified && userLevelSpecified) {
-          eligible = isTrackMatch && isLevelMatch;
-        } else if (teamTrackSpecified) {
-          eligible = isTrackMatch;
-        } else if (userLevelSpecified) {
-          eligible = isLevelMatch;
-        } else {
-          eligible = true;
-        }
+        // Optimization: Do NOT write meetingAssignments documents for rule-based matching.
+        // The frontend and backend evaluate level & track eligibility dynamically on the fly.
+        eligible = false;
       }
 
       if (eligible) {
         const assignmentId = `asg_${meeting.id}_${profile.id}`;
-        batch.set(doc(db, "meetingAssignments", assignmentId), {
+        currentBatch.set(doc(db, "meetingAssignments", assignmentId), {
           id: assignmentId,
           meetingId: meeting.id,
           userId: profile.id,
-          username: profile.username,
-          fullName: profile.fullName,
+          username: profile.username || "",
+          fullName: profile.fullName || "",
           assignedAt: new Date().toISOString()
         });
 
         batchCount++;
         if (batchCount >= writeBatchSize) {
-          await batch.commit();
-          batch = writeBatch(db);
+          batches.push(currentBatch);
+          currentBatch = writeBatch(db);
           batchCount = 0;
         }
       }
@@ -1260,7 +1579,15 @@ export const syncMeetingAssignments = async (): Promise<void> => {
   }
 
   if (batchCount > 0) {
-    await batch.commit();
+    batches.push(currentBatch);
+  }
+
+  if (batches.length > 0) {
+    try {
+      await Promise.all(batches.map(b => b.commit()));
+    } catch (commitErr) {
+      console.error("[syncMeetingAssignments] Final parallel commit failed:", commitErr);
+    }
   }
 };
 
@@ -1318,9 +1645,138 @@ export function generateRecurrenceDates(params: {
   return dates;
 }
 
-export const saveMeeting = async (meetingData: any): Promise<void> => {
+const logQueuedUpdate = async (params: {
+  meetingId: string;
+  type: "create" | "edit" | "delete";
+  meetingData?: any;
+  deleteMode?: "single" | "future" | "all";
+  recurrenceEditMode?: "single" | "future" | "all";
+  status: "pending" | "applied";
+  adminProfile?: { id: string; email: string };
+}) => {
+  const adminId = params.adminProfile?.id || "system-admin";
+  const adminEmail = params.adminProfile?.email || "admin@bincom.dev";
+  const id = `queued-${params.type}-${params.meetingId}-${Date.now()}`;
+
+  const updateDocData: any = {
+    id,
+    meetingId: params.meetingId,
+    type: params.type,
+    createdAt: new Date().toISOString(),
+    adminId,
+    adminEmail,
+    status: params.status
+  };
+
+  if (params.meetingData !== undefined) {
+    updateDocData.meetingData = params.meetingData;
+  }
+  if (params.deleteMode !== undefined) {
+    updateDocData.deleteMode = params.deleteMode;
+  }
+  if (params.recurrenceEditMode !== undefined) {
+    updateDocData.recurrenceEditMode = params.recurrenceEditMode;
+  }
+
+  await setDoc(doc(db, "queuedMeetingUpdates", id), updateDocData);
+};
+
+export const processQueuedUpdates = async (): Promise<{ succeeded: string[]; failed: Array<{ id: string; error: string }> }> => {
+  const succeeded: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+
+  try {
+    const q = query(
+      collection(db, "queuedMeetingUpdates"),
+      where("status", "in", ["pending", "failed"])
+    );
+    const snapshot = await getDocs(q);
+    if (snapshot.empty) {
+      return { succeeded, failed };
+    }
+
+    const updates = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as QueuedMeetingUpdate));
+    updates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    const latestUpdatesMap = new Map<string, QueuedMeetingUpdate>();
+    updates.forEach(up => {
+      latestUpdatesMap.set(up.meetingId, up);
+    });
+
+    for (const up of latestUpdatesMap.values()) {
+      try {
+        const syncDetails = {
+          syncType: "scheduled (midnight)",
+          syncTimestamp: new Date().toISOString(),
+          syncAdminId: up.adminId,
+          syncAdminEmail: up.adminEmail
+        };
+
+        if (up.type === "create" || up.type === "edit") {
+          const mData = up.meetingData;
+          if (mData) {
+            const docRef = doc(db, "meetings", up.meetingId);
+            const todayStr = getLagosDateString(new Date());
+            const todayDayName = getLagosDayOfWeek(new Date());
+
+            const finalDates = mData.meetingDates || [todayStr];
+            const finalDays = mData.scheduleDays || [];
+            const isActive = finalDates.includes(todayStr) || finalDays.includes(todayDayName);
+
+            const updatedMeeting = {
+              ...mData,
+              isActive,
+              ...syncDetails
+            };
+
+            await setDoc(docRef, updatedMeeting, { merge: true });
+            await syncMeetingAssignmentsForMeetings([updatedMeeting]);
+          }
+        } else if (up.type === "delete") {
+          await deleteDoc(doc(db, "meetings", up.meetingId));
+          await deleteMeetingAssignmentsForMeetings([up.meetingId]);
+        }
+
+        await updateDoc(doc(db, "queuedMeetingUpdates", up.id), {
+          status: "applied",
+          error: deleteField()
+        });
+
+        const siblingUpdates = updates.filter(sibling => sibling.meetingId === up.meetingId && sibling.id !== up.id);
+        for (const sib of siblingUpdates) {
+          await updateDoc(doc(db, "queuedMeetingUpdates", sib.id), {
+            status: "applied"
+          });
+        }
+
+        succeeded.push(up.meetingId);
+      } catch (err: any) {
+        console.error(`Failed to process queued update for ${up.meetingId}:`, err);
+        const errorMsg = err.message || String(err);
+        
+        await updateDoc(doc(db, "queuedMeetingUpdates", up.id), {
+          status: "failed",
+          error: errorMsg,
+          errorTimestamp: new Date().toISOString()
+        });
+
+        failed.push({ id: up.meetingId, error: errorMsg });
+      }
+    }
+  } catch (err: any) {
+    console.error("Error inside processQueuedUpdates general block:", err);
+  }
+
+  return { succeeded, failed };
+};
+
+export const saveMeeting = async (
+  meetingData: any,
+  adminProfile?: { id: string; email: string },
+  syncOption: "immediate" | "midnight" = "immediate",
+  profiles?: Profile[]
+): Promise<void> => {
   const cleanData = { ...meetingData };
-  // Sanitize undefined fields to prevent Firestore setDoc/updateDoc errors
   Object.keys(cleanData).forEach(key => {
     if (cleanData[key] === undefined) {
       delete cleanData[key];
@@ -1331,8 +1787,9 @@ export const saveMeeting = async (meetingData: any): Promise<void> => {
 
   const todayStr = getLagosDateString(new Date());
   const todayDayName = getLagosDayOfWeek(new Date());
+  const adminId = adminProfile?.id || "system-admin";
+  const adminEmail = adminProfile?.email || "admin@bincom.dev";
 
-  // Check if it's a recurring meeting being newly scheduled
   if (cleanData.isRecurring && !cleanData.id) {
     const seriesId = `series-${Date.now()}`;
     const frequency = cleanData.recurrenceFrequency || "one-time";
@@ -1347,9 +1804,11 @@ export const saveMeeting = async (meetingData: any): Promise<void> => {
       customInterval
     });
 
-    const batch = writeBatch(db);
     const occurrencesToSync: any[] = [];
-    dates.forEach((dateStr) => {
+    let batch = writeBatch(db);
+    let count = 0;
+
+    for (const dateStr of dates) {
       const occurrenceId = `meet-${seriesId}-${dateStr}`;
       const hasTodayDate = dateStr === todayStr;
       const hasTodayDay = cleanData.scheduleDays && cleanData.scheduleDays.includes(todayDayName);
@@ -1367,34 +1826,127 @@ export const saveMeeting = async (meetingData: any): Promise<void> => {
         recurrenceCustomInterval: customInterval
       };
       
-      batch.set(doc(db, "meetings", occurrenceId), occurrenceData, { merge: true });
-      occurrencesToSync.push(occurrenceData);
-    });
+      if (syncOption === "immediate") {
+        const syncedData = {
+          ...occurrenceData,
+          syncType: "immediate",
+          syncTimestamp: new Date().toISOString(),
+          syncAdminId: adminId,
+          syncAdminEmail: adminEmail
+        };
+        batch.set(doc(db, "meetings", occurrenceId), syncedData, { merge: true });
+        occurrencesToSync.push(syncedData);
 
-    await batch.commit();
-    await syncMeetingAssignmentsForMeetings(occurrencesToSync);
+        const logId = `queued-create-${occurrenceId}-${Date.now()}`;
+        const updateDocData = {
+          id: logId,
+          meetingId: occurrenceId,
+          type: "create",
+          createdAt: new Date().toISOString(),
+          adminId,
+          adminEmail,
+          status: "applied",
+          meetingData: syncedData
+        };
+        batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+      } else {
+        const logId = `queued-create-${occurrenceId}-${Date.now()}`;
+        const updateDocData = {
+          id: logId,
+          meetingId: occurrenceId,
+          type: "create",
+          createdAt: new Date().toISOString(),
+          adminId,
+          adminEmail,
+          status: "pending",
+          meetingData: occurrenceData
+        };
+        batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+      }
+
+      count += 2;
+      if (count >= 400) {
+        await batch.commit();
+        batch = writeBatch(db);
+        count = 0;
+      }
+    }
+
+    if (count > 0) {
+      await batch.commit();
+    }
+
+    if (syncOption === "immediate") {
+      await syncMeetingAssignmentsForMeetings(occurrencesToSync, true, profiles);
+    }
     return;
   }
 
-  // Check if editing an existing series
   if (cleanData.id && cleanData.seriesId) {
     const currentId = cleanData.id;
     const currentSeriesId = cleanData.seriesId;
     const currentOccurrenceDate = cleanData.occurrenceDate || todayStr;
 
-    delete cleanData.id; // remove id to prevent overwriting other docs' ids
+    delete cleanData.id;
 
     if (editMode === "single") {
-      // Update only this specific occurrence
-      cleanData.isActive = (cleanData.meetingDates || []).includes(todayStr) || (cleanData.scheduleDays || []).includes(todayDayName);
-      const updatedData = {
+      const hasTodayDate = currentOccurrenceDate === todayStr;
+      const hasTodayDay = cleanData.scheduleDays && cleanData.scheduleDays.includes(todayDayName);
+      cleanData.isActive = hasTodayDate || hasTodayDay;
+
+      const occurrenceData = {
         ...cleanData,
-        id: currentId
+        id: currentId,
+        seriesId: currentSeriesId,
+        occurrenceDate: currentOccurrenceDate,
+        meetingDates: [currentOccurrenceDate]
       };
-      await setDoc(doc(db, "meetings", currentId), updatedData, { merge: true });
-      await syncMeetingAssignmentsForMeetings([updatedData]);
+
+      const batch = writeBatch(db);
+
+      if (syncOption === "immediate") {
+        const syncedData = {
+          ...occurrenceData,
+          syncType: "immediate",
+          syncTimestamp: new Date().toISOString(),
+          syncAdminId: adminId,
+          syncAdminEmail: adminEmail
+        };
+        batch.set(doc(db, "meetings", currentId), syncedData, { merge: true });
+
+        const logId = `queued-edit-${currentId}-${Date.now()}`;
+        const updateDocData = {
+          id: logId,
+          meetingId: currentId,
+          type: "edit",
+          createdAt: new Date().toISOString(),
+          adminId,
+          adminEmail,
+          status: "applied",
+          meetingData: syncedData,
+          recurrenceEditMode: "single"
+        };
+        batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+
+        await batch.commit();
+        await syncMeetingAssignmentsForMeetings([syncedData], false, profiles);
+      } else {
+        const logId = `queued-edit-${currentId}-${Date.now()}`;
+        const updateDocData = {
+          id: logId,
+          meetingId: currentId,
+          type: "edit",
+          createdAt: new Date().toISOString(),
+          adminId,
+          adminEmail,
+          status: "pending",
+          meetingData: occurrenceData,
+          recurrenceEditMode: "single"
+        };
+        batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+        await batch.commit();
+      }
     } else {
-      // Find occurrences to update
       const q = query(
         collection(db, "meetings"),
         where("seriesId", "==", currentSeriesId)
@@ -1409,16 +1961,17 @@ export const saveMeeting = async (meetingData: any): Promise<void> => {
           })
         : snapshot.docs;
 
-      const batch = writeBatch(db);
       const occurrencesToSync: any[] = [];
+      let batch = writeBatch(db);
+      let count = 0;
 
-      docsToUpdate.forEach((d) => {
+      for (const d of docsToUpdate) {
         const dData = d.data() as any;
         const dateStr = dData.occurrenceDate || todayStr;
         const hasTodayDate = dateStr === todayStr;
         const hasTodayDay = cleanData.scheduleDays && cleanData.scheduleDays.includes(todayDayName);
 
-        const updatedData = {
+        const occurrenceData = {
           ...cleanData,
           id: d.id,
           seriesId: currentSeriesId,
@@ -1427,72 +1980,384 @@ export const saveMeeting = async (meetingData: any): Promise<void> => {
           isActive: hasTodayDate || hasTodayDay
         };
 
-        batch.set(d.ref, updatedData, { merge: true });
-        occurrencesToSync.push(updatedData);
-      });
+        if (syncOption === "immediate") {
+          const syncedData = {
+            ...occurrenceData,
+            syncType: "immediate",
+            syncTimestamp: new Date().toISOString(),
+            syncAdminId: adminId,
+            syncAdminEmail: adminEmail
+          };
+          batch.set(d.ref, syncedData, { merge: true });
+          occurrencesToSync.push(syncedData);
 
-      await batch.commit();
-      await syncMeetingAssignmentsForMeetings(occurrencesToSync);
+          const logId = `queued-edit-${d.id}-${Date.now()}`;
+          const updateDocData = {
+            id: logId,
+            meetingId: d.id,
+            type: "edit",
+            createdAt: new Date().toISOString(),
+            adminId,
+            adminEmail,
+            status: "applied",
+            meetingData: syncedData,
+            recurrenceEditMode: editMode
+          };
+          batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+        } else {
+          const logId = `queued-edit-${d.id}-${Date.now()}`;
+          const updateDocData = {
+            id: logId,
+            meetingId: d.id,
+            type: "edit",
+            createdAt: new Date().toISOString(),
+            adminId,
+            adminEmail,
+            status: "pending",
+            meetingData: occurrenceData,
+            recurrenceEditMode: editMode
+          };
+          batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+        }
+
+        count += 2;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      if (count > 0) {
+        await batch.commit();
+      }
+
+      if (syncOption === "immediate") {
+        await syncMeetingAssignmentsForMeetings(occurrencesToSync, false, profiles);
+      }
     }
 
     return;
   }
 
-  // Default behavior (normal one-time meeting create/edit)
   delete cleanData.id;
   const meetingId = meetingData.id || `meet-${Date.now()}`;
   const finalMeetingDates = cleanData.meetingDates || [todayStr];
   const finalScheduleDays = cleanData.scheduleDays || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
   cleanData.isActive = finalMeetingDates.includes(todayStr) || finalScheduleDays.includes(todayDayName);
 
-  const updatedData = {
+  const occurrenceData = {
     ...cleanData,
     id: meetingId
   };
-  await setDoc(doc(db, "meetings", meetingId), updatedData, { merge: true });
 
-  await syncMeetingAssignmentsForMeetings([updatedData]);
+  const batch = writeBatch(db);
+
+  if (syncOption === "immediate") {
+    const syncedData = {
+      ...occurrenceData,
+      syncType: "immediate",
+      syncTimestamp: new Date().toISOString(),
+      syncAdminId: adminId,
+      syncAdminEmail: adminEmail
+    };
+    batch.set(doc(db, "meetings", meetingId), syncedData, { merge: true });
+
+    const logId = `queued-${meetingData.id ? "edit" : "create"}-${meetingId}-${Date.now()}`;
+    const updateDocData = {
+      id: logId,
+      meetingId,
+      type: meetingData.id ? "edit" : "create",
+      createdAt: new Date().toISOString(),
+      adminId,
+      adminEmail,
+      status: "applied",
+      meetingData: syncedData
+    };
+    batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+
+    await batch.commit();
+    await syncMeetingAssignmentsForMeetings([syncedData], !meetingData.id, profiles);
+  } else {
+    const logId = `queued-${meetingData.id ? "edit" : "create"}-${meetingId}-${Date.now()}`;
+    const updateDocData = {
+      id: logId,
+      meetingId,
+      type: meetingData.id ? "edit" : "create",
+      createdAt: new Date().toISOString(),
+      adminId,
+      adminEmail,
+      status: "pending",
+      meetingData: occurrenceData
+    };
+    batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+    await batch.commit();
+  }
 };
 
-export const deleteMeeting = async (meetingId: string, deleteMode: "single" | "future" | "all" = "single"): Promise<void> => {
-  const deletedIds: string[] = [];
-  if (deleteMode === "single") {
-    await deleteDoc(doc(db, "meetings", meetingId));
-    deletedIds.push(meetingId);
-  } else {
-    // Fetch the meeting to get seriesId and occurrenceDate
-    const meetDoc = await getDoc(doc(db, "meetings", meetingId));
-    if (meetDoc.exists()) {
-      const meetData = meetDoc.data() as any;
-      const seriesId = meetData.seriesId;
-      const occurrenceDate = meetData.occurrenceDate;
-      if (seriesId) {
-        const q = query(
-          collection(db, "meetings"),
-          where("seriesId", "==", seriesId)
-        );
-        const snapshot = await getDocs(q);
-        const docsToDelete = deleteMode === "future"
-          ? snapshot.docs.filter((d) => {
-              const dData = d.data() as any;
-              const dateStr = dData.occurrenceDate || "";
-              return dateStr >= occurrenceDate;
-            })
-          : snapshot.docs;
+const preserveHistoryBeforeDeletion = async (meetings: any[], profiles?: Profile[]): Promise<void> => {
+  const now = new Date();
+  const todayStr = getLagosDateString(now);
 
-        const batch = writeBatch(db);
-        docsToDelete.forEach((d) => {
-          batch.delete(d.ref);
-          deletedIds.push(d.id);
-        });
-        await batch.commit();
-      } else {
-        await deleteDoc(doc(db, "meetings", meetingId));
-        deletedIds.push(meetingId);
+  const historicalMeetings = meetings.filter((m) => {
+    const dates: string[] = [];
+    if (m.occurrenceDate) {
+      dates.push(m.occurrenceDate);
+    }
+    if (m.meetingDates && Array.isArray(m.meetingDates)) {
+      m.meetingDates.forEach((d: string) => {
+        if (d && !dates.includes(d)) dates.push(d);
+      });
+    }
+    if (dates.length === 0) {
+      dates.push(todayStr);
+    }
+    // We preserve if any of the dates is today or in the past
+    return dates.some(d => d <= todayStr);
+  });
+
+  if (historicalMeetings.length === 0) return;
+
+  const batches: any[] = [];
+  let currentBatch = writeBatch(db);
+  let batchCount = 0;
+  const writeBatchSize = 400;
+
+  for (const m of historicalMeetings) {
+    const dates: string[] = [];
+    if (m.occurrenceDate) {
+      dates.push(m.occurrenceDate);
+    }
+    if (m.meetingDates && Array.isArray(m.meetingDates)) {
+      m.meetingDates.forEach((d: string) => {
+        if (d && !dates.includes(d)) dates.push(d);
+      });
+    }
+    if (dates.length === 0) {
+      dates.push(todayStr);
+    }
+
+    // Only process dates that are today or in the past
+    const occurrencesToProcess = dates.filter(d => d <= todayStr);
+
+    for (const occurrenceDate of occurrencesToProcess) {
+      const historyId = `m-hist-${m.id}-${occurrenceDate}`;
+
+      const scheduledTimeStr = m.timeString || m.time || "09:00 AM";
+      const scheduledMinutes = parseMeetingTimeToMinutes(scheduledTimeStr);
+      const durationStr = m.duration || "30 minutes";
+      const matchDuration = durationStr.match(/(\d+)/);
+      const durationMinutes = matchDuration ? parseInt(matchDuration[1], 10) : 30;
+      const endTimeMinutes = scheduledMinutes + durationMinutes;
+      const scheduledEndTimeStr = formatMinutesToMeetingTime(endTimeMinutes);
+
+      const historyData: MeetingHistoryRecord = {
+        id: historyId,
+        meetingId: m.id,
+        title: m.title,
+        type: m.type,
+        date: occurrenceDate,
+        scheduledStartTime: scheduledTimeStr,
+        scheduledEndTime: scheduledEndTimeStr,
+        duration: durationStr,
+        organizer: m.organizer || "Admin Team",
+        userLevels: Array.isArray(m.userLevels) ? m.userLevels : (m.trackId ? (Array.isArray(m.trackId) ? m.trackId : [m.trackId]) : []),
+        targetTeamTrackEligibility: Array.isArray(m.targetTeamTrackEligibility) ? m.targetTeamTrackEligibility : []
+      };
+
+      currentBatch.set(doc(db, "meetingHistory", historyId), historyData, { merge: true });
+      batchCount++;
+      if (batchCount >= writeBatchSize) {
+        batches.push(currentBatch);
+        currentBatch = writeBatch(db);
+        batchCount = 0;
       }
     }
   }
-  await deleteMeetingAssignmentsForMeetings(deletedIds);
+
+  if (batchCount > 0) {
+    batches.push(currentBatch);
+  }
+
+  if (batches.length > 0) {
+    try {
+      await Promise.all(batches.map(b => b.commit()));
+    } catch (commitErr) {
+      console.error("[preserveHistoryBeforeDeletion] Commit parallel batches failed:", commitErr);
+    }
+  }
+};
+
+export const deleteMeeting = async (
+  meetingId: string,
+  deleteMode: "single" | "future" | "all" = "single",
+  adminProfile?: { id: string; email: string },
+  syncOption: "immediate" | "midnight" = "immediate",
+  profiles?: Profile[]
+): Promise<void> => {
+  const deletedIds: string[] = [];
+  const meetingsToDeleteData: any[] = [];
+
+  const meetDoc = await getDoc(doc(db, "meetings", meetingId));
+  if (!meetDoc.exists()) {
+    console.warn(`[deleteMeeting] Target meeting document ${meetingId} not found.`);
+    return;
+  }
+
+  const meetData = meetDoc.data() as any;
+  const adminId = adminProfile?.id || "system-admin";
+  const adminEmail = adminProfile?.email || "admin@bincom.dev";
+  const batch = writeBatch(db);
+  let batchCount = 0;
+
+  if (deleteMode === "single") {
+    meetingsToDeleteData.push({ id: meetingId, ...meetData });
+    
+    if (syncOption === "immediate") {
+      await preserveHistoryBeforeDeletion([{ id: meetingId, ...meetData }], profiles);
+      batch.delete(doc(db, "meetings", meetingId));
+      deletedIds.push(meetingId);
+      
+      const logId = `queued-delete-${meetingId}-${Date.now()}`;
+      const updateDocData = {
+        id: logId,
+        meetingId,
+        type: "delete",
+        createdAt: new Date().toISOString(),
+        adminId,
+        adminEmail,
+        status: "applied",
+        deleteMode: "single"
+      };
+      batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+    } else {
+      const logId = `queued-delete-${meetingId}-${Date.now()}`;
+      const updateDocData = {
+        id: logId,
+        meetingId,
+        type: "delete",
+        createdAt: new Date().toISOString(),
+        adminId,
+        adminEmail,
+        status: "pending",
+        deleteMode: "single"
+      };
+      batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+    }
+    await batch.commit();
+  } else {
+    const seriesId = meetData.seriesId;
+    const occurrenceDate = meetData.occurrenceDate;
+    if (seriesId) {
+      const q = query(
+        collection(db, "meetings"),
+        where("seriesId", "==", seriesId)
+      );
+      const snapshot = await getDocs(q);
+      const docsToDelete = deleteMode === "future"
+        ? snapshot.docs.filter((d) => {
+            const dData = d.data() as any;
+            const dateStr = dData.occurrenceDate || "";
+            return dateStr >= occurrenceDate;
+          })
+        : snapshot.docs;
+
+      docsToDelete.forEach((d) => {
+        meetingsToDeleteData.push({ id: d.id, ...d.data() });
+      });
+
+      if (syncOption === "immediate") {
+        await preserveHistoryBeforeDeletion(meetingsToDeleteData, profiles);
+        for (const d of docsToDelete) {
+          batch.delete(d.ref);
+          deletedIds.push(d.id);
+
+          const logId = `queued-delete-${d.id}-${Date.now()}`;
+          const updateDocData = {
+            id: logId,
+            meetingId: d.id,
+            type: "delete",
+            createdAt: new Date().toISOString(),
+            adminId,
+            adminEmail,
+            status: "applied",
+            deleteMode
+          };
+          batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+          
+          batchCount += 2;
+          if (batchCount >= 400) {
+            await batch.commit();
+            batchCount = 0;
+          }
+        }
+      } else {
+        for (const d of docsToDelete) {
+          const logId = `queued-delete-${d.id}-${Date.now()}`;
+          const updateDocData = {
+            id: logId,
+            meetingId: d.id,
+            type: "delete",
+            createdAt: new Date().toISOString(),
+            adminId,
+            adminEmail,
+            status: "pending",
+            deleteMode
+          };
+          batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+          
+          batchCount++;
+          if (batchCount >= 400) {
+            await batch.commit();
+            batchCount = 0;
+          }
+        }
+      }
+      
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+    } else {
+      meetingsToDeleteData.push({ id: meetingId, ...meetData });
+      
+      if (syncOption === "immediate") {
+        await preserveHistoryBeforeDeletion([{ id: meetingId, ...meetData }], profiles);
+        batch.delete(doc(db, "meetings", meetingId));
+        deletedIds.push(meetingId);
+
+        const logId = `queued-delete-${meetingId}-${Date.now()}`;
+        const updateDocData = {
+          id: logId,
+          meetingId,
+          type: "delete",
+          createdAt: new Date().toISOString(),
+          adminId,
+          adminEmail,
+          status: "applied",
+          deleteMode: "single"
+        };
+        batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+      } else {
+        const logId = `queued-delete-${meetingId}-${Date.now()}`;
+        const updateDocData = {
+          id: logId,
+          meetingId,
+          type: "delete",
+          createdAt: new Date().toISOString(),
+          adminId,
+          adminEmail,
+          status: "pending",
+          deleteMode: "single"
+        };
+        batch.set(doc(db, "queuedMeetingUpdates", logId), updateDocData);
+      }
+      await batch.commit();
+    }
+  }
+
+  if (syncOption === "immediate" && deletedIds.length > 0) {
+    await deleteMeetingAssignmentsForMeetings(deletedIds, profiles);
+  }
 };
 
 export const submitStandup = async (standupData: any): Promise<void> => {
@@ -1610,6 +2475,12 @@ export const joinMeetingAttendance = async (userId: string, meetingId: string): 
     status = "Late";
   }
 
+  const durationStr = meeting.duration || "30 minutes";
+  const matchDuration = durationStr.match(/(\d+)/);
+  const durationMinutes = matchDuration ? parseInt(matchDuration[1], 10) : 30;
+  const endTimeMinutes = scheduledMinutes + durationMinutes;
+  const scheduledEndTimeStr = formatMinutesToMeetingTime(endTimeMinutes);
+
   const record: AttendanceRecord = {
     id: `att_${meetingId}_${userId}_${todayStr}`,
     userId,
@@ -1621,7 +2492,13 @@ export const joinMeetingAttendance = async (userId: string, meetingId: string): 
     timestamp: now.toISOString(),
     status,
     track: profile.track,
-    meetingDate: todayStr
+    meetingDate: todayStr,
+    scheduledStartTime: scheduledTimeStr,
+    scheduledEndTime: scheduledEndTimeStr,
+    duration: durationStr,
+    organizer: meeting.organizer || "Admin Team",
+    userLevels: Array.isArray(meeting.userLevels) ? meeting.userLevels : (meeting.trackId ? (Array.isArray(meeting.trackId) ? meeting.trackId : [meeting.trackId]) : []),
+    targetTeamTrackEligibility: Array.isArray(meeting.targetTeamTrackEligibility) ? meeting.targetTeamTrackEligibility : []
   };
 
   await setDoc(doc(db, "attendance", record.id), record);
@@ -1674,6 +2551,26 @@ export const adminUpdateAttendance = async (
   let recordId = `att_${meetingId}_${targetUserId}_${meetingDate}`;
   let recordData: any;
 
+  let scheduledStartTime = "09:00 AM";
+  let scheduledEndTime = "09:30 AM";
+  let duration = "30 minutes";
+  let organizer = "Admin Team";
+  let userLevels: string[] = [];
+  let targetTeamTrackEligibility: string[] = [];
+
+  if (meeting) {
+    scheduledStartTime = meeting.timeString || "09:00 AM";
+    duration = meeting.duration || "30 minutes";
+    const scheduledMinutes = parseMeetingTimeToMinutes(scheduledStartTime);
+    const matchDuration = duration.match(/(\d+)/);
+    const durationMinutes = matchDuration ? parseInt(matchDuration[1], 10) : 30;
+    const endTimeMinutes = scheduledMinutes + durationMinutes;
+    scheduledEndTime = formatMinutesToMeetingTime(endTimeMinutes);
+    organizer = meeting.organizer || "Admin Team";
+    userLevels = Array.isArray(meeting.userLevels) ? meeting.userLevels : (meeting.trackId ? (Array.isArray(meeting.trackId) ? meeting.trackId : [meeting.trackId]) : []);
+    targetTeamTrackEligibility = Array.isArray(meeting.targetTeamTrackEligibility) ? meeting.targetTeamTrackEligibility : [];
+  }
+
   if (!snapshot.empty) {
     const docSnap = snapshot.docs[0];
     recordId = docSnap.id;
@@ -1693,7 +2590,13 @@ export const adminUpdateAttendance = async (
       timestamp: new Date().toISOString(),
       status: newStatus,
       track: targetUser.track,
-      meetingDate: meetingDate
+      meetingDate: meetingDate,
+      scheduledStartTime,
+      scheduledEndTime,
+      duration,
+      organizer,
+      userLevels,
+      targetTeamTrackEligibility
     };
   }
 
@@ -1718,6 +2621,9 @@ export const adminUpdateAttendance = async (
 export const triggerSimulatedCron = async (): Promise<{ meetings: any[] }> => {
   const todayStr = getLagosDateString(new Date());
   const todayDayName = getLagosDayOfWeek(new Date());
+
+  // Process all queued updates first so they are fully synchronized
+  await processQueuedUpdates();
 
   const meetingsSnapshot = await getDocs(collection(db, "meetings"));
   const batch = writeBatch(db);

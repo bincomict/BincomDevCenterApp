@@ -250,7 +250,8 @@ interface AdminPanelProps {
     | "attendance_history"
     | "tasks_config"
     | "microservices_config"
-    | "pathways_config";
+    | "pathways_config"
+    | "sync_logs";
   setAdminTab: (tab: any) => void;
 }
 
@@ -754,6 +755,16 @@ export default function AdminPanel({
   const [cronRunning, setCronRunning] = useState(false);
   const [syncRunning, setSyncRunning] = useState(false);
   const [syncLogs, setSyncLogs] = useState<string[]>([]);
+  const [syncTimeoutSec, setSyncTimeoutSec] = useState<number>(10);
+
+  // Synchronization selection and scope states
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [syncModalType, setSyncModalType] = useState<"save" | "delete" | null>(null);
+  const [syncModalData, setSyncModalData] = useState<any>(null);
+  const [syncModalDeleteId, setSyncModalDeleteId] = useState<string | null>(null);
+  const [syncModalDeleteMode, setSyncModalDeleteMode] = useState<"single" | "future" | "all">("single");
+  const [selectedSyncOption, setSelectedSyncOption] = useState<"immediate" | "midnight">("immediate");
+  const [recurrenceEditOption, setRecurrenceEditOption] = useState<"single" | "future" | "all">("single");
 
   // CSV table toggle/preview
   const [csvPreview, setCsvPreview] = useState(false);
@@ -999,7 +1010,7 @@ export default function AdminPanel({
     }
   };
 
-  // Save/Edit/Create Meeting
+  // Save/Edit/Create Meeting - Intercepts to show Sync Options Modal
   const handleSaveMeeting = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!meetingTitle.trim() || !meetingTime.trim() || !meetingUrl.trim()) {
@@ -1032,99 +1043,136 @@ export default function AdminPanel({
         return;
       }
     }
-    setLoading(true);
-    try {
-      await saveMeeting({
-        id: editingMeetingId || undefined,
-        title: meetingTitle,
-        type: meetingType,
-        timeString: meetingTime,
-        jitsiUrl: meetingUrl,
-        trackId: meetingTrack.length > 0 ? meetingTrack : null,
-        userLevels: meetingTrack.length > 0 ? meetingTrack : null,
-        targetTeamTrackEligibility:
-          meetingTeamTracks.length > 0 ? meetingTeamTracks : null,
-        scheduleDays: meetingScheduleDays,
-        meetingDates: finalMeetingDates,
-        assignedUserIds: meetingAssignedUsers,
-        duration: meetingDuration,
-        organizer: meetingOrganizer,
-        status: meetingStatus,
-        description: meetingDescription,
-        // Recurrence parameters
-        isRecurring,
-        recurrenceFrequency: isRecurring ? recurrenceFrequency : undefined,
-        recurrenceStartDate: isRecurring ? recurrenceStartDate : undefined,
-        recurrenceEndDate: isRecurring ? recurrenceEndDate : undefined,
-        recurrenceCustomInterval: isRecurring && recurrenceFrequency === "custom" ? recurrenceCustomInterval : undefined,
-        recurrenceEditMode: editingMeetingId ? recurrenceEditMode : undefined,
-        seriesId: editingMeetingId ? (state.meetings.find((m: any) => m.id === editingMeetingId)?.seriesId || undefined) : undefined,
-        occurrenceDate: editingMeetingId ? (state.meetings.find((m: any) => m.id === editingMeetingId)?.occurrenceDate || undefined) : undefined,
-      });
 
-      triggerSuccess(
-        editingMeetingId
-          ? "Meeting updated successfully!"
-          : "New meeting scheduled successfully!",
-      );
-      setEditingMeetingId(null);
-      setMeetingTitle("");
-      setMeetingTime("");
-      setMeetingUrl("");
-      setMeetingType("Knowledge Track");
-      setMeetingTrack([]);
-      setMeetingTeamTracks([]);
-      setMeetingScheduleDays([
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-      ]);
-      setMeetingDates([]);
-      setCurrentPickedDate("");
-      setAllowPastDates(false);
-      setMeetingDuration("60 minutes");
-      setMeetingOrganizer("Admin Team");
-      setMeetingStatus("Upcoming");
-      setMeetingDescription("");
-      setMeetingAssignedUsers([]);
-      setUserSearchText("");
-      setIsAddingMeeting(false);
-      // Reset recurrence states
-      setIsRecurring(false);
-      setRecurrenceFrequency("one-time");
-      setRecurrenceStartDate("");
-      setRecurrenceEndDate("");
-      setRecurrenceCustomInterval(1);
-      setRecurrenceEditMode("single");
+    const meetingData = {
+      id: editingMeetingId || undefined,
+      title: meetingTitle,
+      type: meetingType,
+      timeString: meetingTime,
+      jitsiUrl: meetingUrl,
+      trackId: meetingTrack.length > 0 ? meetingTrack : null,
+      userLevels: meetingTrack.length > 0 ? meetingTrack : null,
+      targetTeamTrackEligibility:
+        meetingTeamTracks.length > 0 ? meetingTeamTracks : null,
+      scheduleDays: meetingScheduleDays,
+      meetingDates: finalMeetingDates,
+      assignedUserIds: meetingAssignedUsers,
+      duration: meetingDuration,
+      organizer: meetingOrganizer,
+      status: meetingStatus,
+      description: meetingDescription,
+      // Recurrence parameters
+      isRecurring,
+      recurrenceFrequency: isRecurring ? recurrenceFrequency : undefined,
+      recurrenceStartDate: isRecurring ? recurrenceStartDate : undefined,
+      recurrenceEndDate: isRecurring ? recurrenceEndDate : undefined,
+      recurrenceCustomInterval: isRecurring && recurrenceFrequency === "custom" ? recurrenceCustomInterval : undefined,
+      recurrenceEditMode: editingMeetingId ? recurrenceEditOption : undefined,
+      seriesId: editingMeetingId ? (state.meetings.find((m: any) => m.id === editingMeetingId)?.seriesId || undefined) : undefined,
+      occurrenceDate: editingMeetingId ? (state.meetings.find((m: any) => m.id === editingMeetingId)?.occurrenceDate || undefined) : undefined,
+    };
 
-      onStateUpdate();
-    } catch (e: any) {
-      triggerError("Saving meeting failed: " + e.message);
-    } finally {
-      setLoading(false);
-    }
+    setSyncModalData(meetingData);
+    setSyncModalType("save");
+    setSelectedSyncOption("immediate");
+    setRecurrenceEditOption(recurrenceEditMode || "single");
+    setSyncModalOpen(true);
   };
 
-  // Delete scheduled Meeting
-  const handleDeleteMeeting = async (meetingId: string, deleteMode: "single" | "future" | "all" = "single") => {
-    setIsDeletingMeeting(true);
-    console.log(`Initiating delete for meeting ID: ${meetingId} with mode: ${deleteMode}`);
-    try {
-      await deleteMeeting(meetingId, deleteMode);
+  // Intercept Delete to use the Sync Selection Modal
+  const handleInitiateDelete = (meetingId: string, deleteMode: "single" | "future" | "all") => {
+    setSyncModalDeleteId(meetingId);
+    setSyncModalDeleteMode(deleteMode);
+    setSyncModalType("delete");
+    setSelectedSyncOption("immediate");
+    setMeetingToDeleteId(null); // Close the initial delete modal
+    setSyncModalOpen(true);
+  };
 
-      triggerSuccess("Meeting deleted successfully.");
-      if (meetingId === editingMeetingId) {
-        setEditingMeetingId(null);
-      }
-      setMeetingToDeleteId(null); // close the confirm modal
+  // Execute Save or Delete with selected Sync Option
+  const executeSyncAction = async () => {
+    setLoading(true);
+    try {
+      // 45-second safety timeout to prevent getting stuck on heavy database operations
+      const timeoutPromise = new Promise<void>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("The operation timed out. The database may still be processing in the background, but please check your network and try again."));
+        }, 45000);
+      });
+
+      const actionPromise = (async () => {
+        if (syncModalType === "save") {
+          const payload = {
+            ...syncModalData,
+            recurrenceEditMode: syncModalData.seriesId ? recurrenceEditOption : undefined
+          };
+          await saveMeeting(payload, adminProfile, selectedSyncOption, state.profiles);
+          
+          triggerSuccess(
+            selectedSyncOption === "immediate"
+              ? (editingMeetingId ? "Meeting updated and synced immediately!" : "New meeting scheduled and synced immediately!")
+              : "Meeting changes queued for midnight synchronization."
+          );
+          
+          // Reset states
+          setEditingMeetingId(null);
+          setMeetingTitle("");
+          setMeetingTime("");
+          setMeetingUrl("");
+          setMeetingType("Knowledge Track");
+          setMeetingTrack([]);
+          setMeetingTeamTracks([]);
+          setMeetingScheduleDays([
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+          ]);
+          setMeetingDates([]);
+          setCurrentPickedDate("");
+          setAllowPastDates(false);
+          setMeetingDuration("60 minutes");
+          setMeetingOrganizer("Admin Team");
+          setMeetingStatus("Upcoming");
+          setMeetingDescription("");
+          setMeetingAssignedUsers([]);
+          setUserSearchText("");
+          setIsAddingMeeting(false);
+          setIsRecurring(false);
+          setRecurrenceFrequency("one-time");
+          setRecurrenceStartDate("");
+          setRecurrenceEndDate("");
+          setRecurrenceCustomInterval(1);
+          setRecurrenceEditMode("single");
+        } else if (syncModalType === "delete") {
+          if (syncModalDeleteId) {
+            await deleteMeeting(syncModalDeleteId, syncModalDeleteMode, adminProfile, selectedSyncOption, state.profiles);
+            
+            triggerSuccess(
+              selectedSyncOption === "immediate"
+                ? "Meeting deleted and synced immediately."
+                : "Meeting deletion queued for midnight synchronization."
+            );
+            if (syncModalDeleteId === editingMeetingId) {
+              setEditingMeetingId(null);
+            }
+          }
+        }
+      })();
+
+      await Promise.race([actionPromise, timeoutPromise]);
+      
+      setSyncModalOpen(false);
+      setSyncModalType(null);
+      setSyncModalData(null);
+      setSyncModalDeleteId(null);
       onStateUpdate();
     } catch (e: any) {
-      console.error("Failed to delete meeting:", e);
-      triggerError("Meeting deletion failed: " + e.message);
+      console.error("Failed to execute sync action:", e);
+      triggerError("Failed to execute sync action: " + e.message);
     } finally {
-      setIsDeletingMeeting(false);
+      setLoading(false);
     }
   };
 
@@ -1139,7 +1187,19 @@ export default function AdminPanel({
     setTimeout(async () => {
       try {
         const { synchronizeMeetings } = await import("../firebaseService");
-        const result = await synchronizeMeetings();
+
+        // Create safety timeout promise
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`Synchronization request timed out after ${syncTimeoutSec} seconds.`));
+          }, syncTimeoutSec * 1000);
+        });
+
+        // Race the sync function against the safety timeout
+        const result = await Promise.race([
+          synchronizeMeetings(),
+          timeoutPromise
+        ]);
 
         setSyncLogs((prev) => [
           ...prev,
@@ -1548,6 +1608,7 @@ export default function AdminPanel({
     tasks_config: { label: "Default Tasks Config", icon: Settings },
     microservices_config: { label: "Microservices Config", icon: Layers },
     pathways_config: { label: "Career Pathways Config", icon: GraduationCap },
+    sync_logs: { label: "Sync & Error Audit Logs", icon: RefreshCw },
   };
 
   const adminTabGroups = [
@@ -1575,6 +1636,7 @@ export default function AdminPanel({
       label: "System & Config",
       items: [
         { id: "cron", label: "00:00 WAT Cron Sync", icon: Cpu },
+        { id: "sync_logs", label: "🔄 Sync & Error Audit Logs", icon: RefreshCw },
         { id: "export", label: "Export Ledger CSV", icon: FileDown },
         { id: "owners", label: "👥 Module Owners", icon: ShieldCheck },
         { id: "tasks_config", label: "⚙️ Default Tasks Config", icon: Settings },
@@ -6507,7 +6569,25 @@ export default function AdminPanel({
             </div>
 
             {/* MANUAL TRIGGER */}
-            <div className="text-center bg-[#F8FAF8] p-4 rounded-xl border border-dashed border-gray-250">
+            <div className="text-center bg-[#F8FAF8] p-4 rounded-xl border border-dashed border-gray-250 flex flex-col items-center justify-center gap-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                <span>Sync Timeout:</span>
+                <select
+                  id="sync-timeout-select"
+                  value={syncTimeoutSec}
+                  onChange={(e) => setSyncTimeoutSec(Number(e.target.value))}
+                  disabled={syncRunning}
+                  className="px-2 py-1 bg-white border border-gray-300 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-[#4B5E40] cursor-pointer"
+                >
+                  <option value={2}>2 seconds (For Testing)</option>
+                  <option value={5}>5 seconds</option>
+                  <option value={10}>10 seconds (Default)</option>
+                  <option value={15}>15 seconds</option>
+                  <option value={30}>30 seconds</option>
+                  <option value={60}>60 seconds</option>
+                </select>
+              </div>
+
               <button
                 id="admin-trigger-sync-btn"
                 onClick={handleTriggerSync}
@@ -6697,6 +6777,166 @@ export default function AdminPanel({
         </div>
       )}
 
+      {/* G. SYNCHRONISATION & ERROR AUDIT LOGS (Section 4.4) */}
+      {adminTab === "sync_logs" && (
+        <div className="space-y-6 animate-fade-in" id="sync-logs-tab-root">
+          <div className="bg-white rounded-2xl border border-gray-150 p-6 space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-100 pb-4">
+              <div>
+                <h3 className="font-extrabold text-gray-900 text-sm sm:text-base flex items-center gap-2">
+                  <RefreshCw className="w-5 h-5 text-emerald-600 animate-spin-slow" />
+                  Synchronisation & Error Audit Logs
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  View queue status, audit immediate or midnight sync actions, and inspect errors.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  setLoading(true);
+                  try {
+                    await triggerSimulatedCron();
+                    triggerSuccess("Midnight cron sync simulated successfully! Queued items processed.");
+                    onStateUpdate();
+                  } catch (err: any) {
+                    triggerError("Cron simulation failed: " + err.message);
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+                disabled={loading}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition flex items-center gap-2 justify-center shrink-0"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Simulate Midnight Sync Job
+              </button>
+            </div>
+
+            {/* STATS ROW */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-gray-50 p-4 rounded-xl border border-gray-150 text-center">
+                <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider">Total Actions</span>
+                <span className="block text-2xl font-black text-slate-800 mt-1">{(state.queuedMeetingUpdates || []).length}</span>
+              </div>
+              <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-150 text-center">
+                <span className="block text-xs font-bold text-amber-600 uppercase tracking-wider">Pending Queue</span>
+                <span className="block text-2xl font-black text-amber-700 mt-1">
+                  {(state.queuedMeetingUpdates || []).filter((item: any) => item.status === "pending").length}
+                </span>
+              </div>
+              <div className="bg-emerald-50/40 p-4 rounded-xl border border-emerald-150 text-center">
+                <span className="block text-xs font-bold text-emerald-600 uppercase tracking-wider">Successfully Synced</span>
+                <span className="block text-2xl font-black text-emerald-700 mt-1">
+                  {(state.queuedMeetingUpdates || []).filter((item: any) => item.status === "synced").length}
+                </span>
+              </div>
+              <div className="bg-rose-50/50 p-4 rounded-xl border border-rose-150 text-center">
+                <span className="block text-xs font-bold text-rose-600 uppercase tracking-wider">Failed Attempts</span>
+                <span className="block text-2xl font-black text-rose-700 mt-1">
+                  {(state.queuedMeetingUpdates || []).filter((item: any) => item.status === "failed").length}
+                </span>
+              </div>
+            </div>
+
+            {/* AUDIT LOG TABLE/LIST */}
+            <div className="space-y-3">
+              <h4 className="font-extrabold text-xs text-gray-800 uppercase tracking-wider">
+                Sync Event Chronicle:
+              </h4>
+
+              {(state.queuedMeetingUpdates || []).length === 0 ? (
+                <div className="text-center py-12 border border-dashed border-gray-200 rounded-xl">
+                  <span className="text-2xl block mb-2">📋</span>
+                  <p className="text-xs text-gray-400 font-semibold">No sync or error logs recorded yet.</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Logs appear here when admin creates, edits, or deletes meetings.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-gray-150 rounded-xl divide-y divide-gray-100">
+                  {/* Row headers */}
+                  <div className="bg-gray-50 px-4 py-2.5 grid grid-cols-12 gap-2 text-[10px] font-black uppercase text-slate-500 tracking-wider">
+                    <span className="col-span-3">Action Type / Meeting</span>
+                    <span className="col-span-2">Sync Schedule</span>
+                    <span className="col-span-3">Admin Initiator</span>
+                    <span className="col-span-2">Date & Time</span>
+                    <span className="col-span-2 text-right">Status</span>
+                  </div>
+
+                  {/* Rows */}
+                  {[...(state.queuedMeetingUpdates || [])]
+                    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+                    .map((item: any) => (
+                      <div key={item.id} className="px-4 py-3 grid grid-cols-12 gap-2 text-xs items-center hover:bg-gray-50/60 transition">
+                        {/* Action / Meeting info */}
+                        <div className="col-span-3 space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            {item.action === "save" ? (
+                              <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-emerald-50 text-emerald-700 rounded-md border border-emerald-100 uppercase">Save</span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-rose-50 text-rose-700 rounded-md border border-rose-100 uppercase">Delete</span>
+                            )}
+                            <span className="font-extrabold text-gray-900 truncate max-w-[120px]">
+                              {item.meetingData?.title || `ID: ${item.meetingId}`}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-gray-400 font-medium">
+                            Meeting ID: {item.meetingId}
+                          </div>
+                        </div>
+
+                        {/* Sync Schedule */}
+                        <div className="col-span-2">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${item.syncOption === "immediate" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                            {item.syncOption === "immediate" ? "⚡ Immediate" : "🌙 Midnight"}
+                          </span>
+                        </div>
+
+                        {/* Admin Initiator */}
+                        <div className="col-span-3 text-[11px] font-semibold text-slate-700 truncate">
+                          {item.adminEmail || item.adminId || "Automated/Unknown"}
+                        </div>
+
+                        {/* Date & Time */}
+                        <div className="col-span-2 space-y-0.5 text-gray-400 font-medium">
+                          <div className="text-[10.5px]">
+                            {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : "-"}
+                          </div>
+                          <div className="text-[9.5px]">
+                            {item.createdAt ? new Date(item.createdAt).toLocaleTimeString() : "-"}
+                          </div>
+                        </div>
+
+                        {/* Status */}
+                        <div className="col-span-2 text-right">
+                          <div className="inline-flex items-center gap-1">
+                            {item.status === "synced" && (
+                              <span className="text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full text-[10px] font-bold border border-emerald-100">Synced</span>
+                            )}
+                            {item.status === "pending" && (
+                              <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full text-[10px] font-bold border border-amber-100">Pending</span>
+                            )}
+                            {item.status === "failed" && (
+                              <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full text-[10px] font-bold border border-rose-100">Failed</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Detailed Error Block if failed */}
+                        {item.status === "failed" && item.error && (
+                          <div className="col-span-12 mt-2 bg-rose-50 border border-rose-100 rounded-lg p-2.5 text-[10.5px] font-mono text-rose-700 leading-normal space-y-1">
+                            <div className="font-bold uppercase tracking-wide text-[9px] text-rose-500">Error Stack Detail:</div>
+                            <p>{item.error}</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* F. EXPORT CSV DATA REPORTING (Section 4.2) */}
       {adminTab === "export" && (
         <div
@@ -6851,7 +7091,7 @@ export default function AdminPanel({
                     type="button"
                     id="confirm-delete-meeting-btn"
                     disabled={isDeletingMeeting}
-                    onClick={() => handleDeleteMeeting(meetingToDeleteId, deleteRecurrenceOption)}
+                    onClick={() => handleInitiateDelete(meetingToDeleteId, deleteRecurrenceOption)}
                     className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none transition flex items-center gap-1.5 justify-center"
                   >
                     {isDeletingMeeting ? (
@@ -6868,6 +7108,173 @@ export default function AdminPanel({
             </div>
           );
         })()}
+
+      {/* --- UNIFIED SYNCHRONISATION OPTIONS MODAL --- */}
+      {syncModalOpen && (
+        <div
+          className="fixed inset-0 z-55 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in"
+          id="synchronisation-options-modal-overlay"
+        >
+          <div className="bg-white rounded-2xl border border-gray-150 p-6 max-w-md w-full shadow-2xl space-y-5 relative transform scale-100 transition duration-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-150">
+                <RefreshCw className="w-5 h-5 animate-spin-slow" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-gray-900 text-sm sm:text-base leading-none">
+                  Corporate Directory Synchronisation
+                </h3>
+                <p className="text-[10px] text-gray-500 font-semibold mt-1">
+                  Choose how meeting updates should propagate to users
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 space-y-2">
+              <div className="text-[9px] font-extrabold text-slate-500 uppercase tracking-wide">
+                Change Details:
+              </div>
+              <div className="text-xs font-bold text-gray-800">
+                {syncModalType === "save" ? (
+                  <>
+                    <span className="text-emerald-600 mr-1">[SAVE/UPDATE]</span>
+                    {syncModalData?.title}
+                  </>
+                ) : (
+                  <>
+                    <span className="text-rose-600 mr-1">[DELETE]</span>
+                    Meeting ID: {syncModalDeleteId}
+                  </>
+                )}
+              </div>
+              <div className="text-[11px] text-gray-500 font-medium leading-normal">
+                {syncModalType === "save" ? (
+                  <span>
+                    🕒 {syncModalData?.timeString} | {syncModalData?.isRecurring ? "Recurring Series" : "One-Time Meeting"}
+                  </span>
+                ) : (
+                  <span>
+                    Mode: <strong className="text-slate-700 capitalize">{syncModalDeleteMode} occurrence(s)</strong>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* SYNC TIME OPTIONS */}
+            <div className="space-y-2.5">
+              <div className="text-[10px] font-extrabold text-gray-700 uppercase tracking-wider">
+                Select Synchronisation Schedule:
+              </div>
+              <div className="grid grid-cols-1 gap-2.5">
+                <label className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer select-none transition ${selectedSyncOption === "immediate" ? "bg-emerald-50/40 border-emerald-500/30" : "bg-white border-gray-200 hover:bg-gray-50"}`}>
+                  <input
+                    type="radio"
+                    name="sync-schedule-option"
+                    value="immediate"
+                    checked={selectedSyncOption === "immediate"}
+                    onChange={() => setSelectedSyncOption("immediate")}
+                    className="mt-0.5 text-emerald-600 focus:ring-emerald-500 h-4 w-4 cursor-pointer"
+                  />
+                  <div>
+                    <span className="block text-xs font-bold text-gray-900">Update Users Immediately</span>
+                    <span className="block text-[10px] text-gray-500 font-semibold mt-0.5 leading-relaxed">
+                      Push updates to all affected users right away. Users will see the change immediately in their Today's Meetings view.
+                    </span>
+                  </div>
+                </label>
+
+                <label className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer select-none transition ${selectedSyncOption === "midnight" ? "bg-amber-50/30 border-amber-500/30" : "bg-white border-gray-200 hover:bg-gray-50"}`}>
+                  <input
+                    type="radio"
+                    name="sync-schedule-option"
+                    value="midnight"
+                    checked={selectedSyncOption === "midnight"}
+                    onChange={() => setSelectedSyncOption("midnight")}
+                    className="mt-0.5 text-amber-600 focus:ring-amber-500 h-4 w-4 cursor-pointer"
+                  />
+                  <div>
+                    <span className="block text-xs font-bold text-gray-900">Update at 12:00 AM (Midnight)</span>
+                    <span className="block text-[10px] text-gray-500 font-semibold mt-0.5 leading-relaxed">
+                      Queue the update to be applied by the next scheduled nightly synchronization job at midnight WAT.
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* RECURRING SCOPE SELECTION IF APPLICABLE */}
+            {syncModalType === "save" && syncModalData?.seriesId && (
+              <div className="space-y-2 border-t border-gray-150 pt-3">
+                <div className="text-[10px] font-extrabold text-gray-700 uppercase tracking-wider">
+                  Recurring Edit Scope:
+                </div>
+                <div className="space-y-1.5 text-xs font-bold text-gray-700">
+                  <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                    <input
+                      type="radio"
+                      name="recurrence-edit-scope"
+                      value="single"
+                      checked={recurrenceEditOption === "single"}
+                      onChange={() => setRecurrenceEditOption("single")}
+                      className="text-[#4B5E40] focus:ring-[#4B5E40] h-3.5 w-3.5 cursor-pointer"
+                    />
+                    <span>This occurrence only</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                    <input
+                      type="radio"
+                      name="recurrence-edit-scope"
+                      value="future"
+                      checked={recurrenceEditOption === "future"}
+                      onChange={() => setRecurrenceEditOption("future")}
+                      className="text-[#4B5E40] focus:ring-[#4B5E40] h-3.5 w-3.5 cursor-pointer"
+                    />
+                    <span>This and all future occurrences</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                    <input
+                      type="radio"
+                      name="recurrence-edit-scope"
+                      value="all"
+                      checked={recurrenceEditOption === "all"}
+                      onChange={() => setRecurrenceEditOption("all")}
+                      className="text-[#4B5E40] focus:ring-[#4B5E40] h-3.5 w-3.5 cursor-pointer"
+                    />
+                    <span>The entire series</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2.5 justify-end pt-3 border-t border-gray-150">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => setSyncModalOpen(false)}
+                className="px-4 py-2 bg-gray-50 hover:bg-gray-100 text-gray-700 text-xs font-bold rounded-xl border border-gray-250 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="execute-sync-action-btn"
+                disabled={loading}
+                onClick={executeSyncAction}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center gap-1.5 justify-center"
+              >
+                {loading ? (
+                  <>
+                    <span className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full shrink-0"></span>
+                    <span>Synchronising...</span>
+                  </>
+                ) : (
+                  <span>🚀 Custom Sync Change</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* --- CONFIRM DELETE MEETING TYPE MODAL --- */}
       {meetingTypeToDelete &&

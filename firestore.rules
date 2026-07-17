@@ -12,9 +12,11 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && 
-        exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin') ||
+        (request.auth.token.email != null && request.auth.token.email.lower() in ['stuncharles@gmail.com', 'hadekunleabdulwally@gmail.com', 'oluwatosinayinde.bincom@gmail.com'])
+      );
     }
 
     function isUnseeded() {
@@ -66,7 +68,7 @@ service cloud.firestore {
 
     // --- Standups Records ---
     match /standups/{standupId} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
       allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow delete: if isAdmin();
@@ -74,7 +76,7 @@ service cloud.firestore {
 
     // --- Personal Development / Microservices summaries ---
     match /personalDevelopment/{id} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
       allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow delete: if isAdmin();
@@ -82,7 +84,7 @@ service cloud.firestore {
 
     // --- Technical Track updates / assignments ---
     match /techUpdates/{id} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
       allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow delete: if isAdmin();
@@ -96,7 +98,7 @@ service cloud.firestore {
 
     // --- Weekly Drill Submissions ---
     match /drillSubmissions/{submissionId} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
       allow update: if isAdmin() || (
         isSignedIn() && resource.data.userId == request.auth.uid && 
@@ -109,7 +111,7 @@ service cloud.firestore {
 
     // --- Social Media Proof Logs ---
     match /socialLogs/{id} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
       allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow delete: if isAdmin();
@@ -123,7 +125,7 @@ service cloud.firestore {
 
     // --- Daily Reports ---
     match /dailyReports/{id} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || request.resource.data.userId == request.auth.uid);
       allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow delete: if isAdmin();
@@ -137,7 +139,7 @@ service cloud.firestore {
 
     // --- Meeting Assignments ---
     match /meetingAssignments/{id} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow write: if isAdmin();
     }
 
@@ -156,6 +158,17 @@ service cloud.firestore {
     match /metadata/{id} {
       allow read: if isSignedIn();
       allow write: if isUnseeded() || isSignedIn();
+    }
+
+    // --- Queued Meeting Updates ---
+    match /queuedMeetingUpdates/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // --- External Meetings Pool (Backup) ---
+    match /externalMeetingsPool/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
   }
 }

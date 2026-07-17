@@ -74,6 +74,26 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "fullName", "todayTasks", "timestamp"]
+    },
+    "QueuedMeetingUpdate": {
+      "title": "QueuedMeetingUpdate",
+      "description": "Queued meeting updates to be processed during midnight synchronization.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "meetingId": { "type": "string" },
+        "type": { "type": "string", "enum": ["create", "edit", "delete"] },
+        "meetingData": { "type": "object" },
+        "deleteMode": { "type": "string", "enum": ["single", "future", "all"] },
+        "recurrenceEditMode": { "type": "string", "enum": ["single", "future", "all"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "adminId": { "type": "string" },
+        "adminEmail": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "applied", "failed"] },
+        "error": { "type": "string" },
+        "errorTimestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "meetingId", "type", "createdAt", "adminId", "adminEmail", "status"]
     }
   },
   "firestore": {
@@ -140,6 +160,14 @@
     "/metadata/{id}": {
       "schema": { "$ref": "object" },
       "description": "System config details like meeting types and metrics."
+    },
+    "/queuedMeetingUpdates/{id}": {
+      "schema": "QueuedMeetingUpdate",
+      "description": "Pending and failed meeting updates queued for midnight synchronization."
+    },
+    "/externalMeetingsPool/{id}": {
+      "schema": "Meeting",
+      "description": "Backup copy of the corporate meeting directory pool used for synchronization fallback."
     }
   }
 }

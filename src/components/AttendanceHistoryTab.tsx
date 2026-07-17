@@ -171,7 +171,32 @@ export default function AttendanceHistoryTab({
 
   // --- Filter Meeting Instances inside selected timeframe ---
   const filteredHistoryMeetings = useMemo(() => {
-    let meetings = state.meetingHistory || [];
+    let meetings = [...(state.meetingHistory || [])];
+
+    // Synthesize any meeting history records from state.attendance that are missing
+    const existingHistoryKeys = new Set(meetings.map(m => `${m.meetingId}_${m.date}`));
+
+    (state.attendance || []).forEach(att => {
+      const date = att.meetingDate || (att.timestamp ? att.timestamp.substring(0, 10) : "");
+      if (!date) return;
+      const key = `${att.meetingId}_${date}`;
+      if (!existingHistoryKeys.has(key)) {
+        existingHistoryKeys.add(key);
+        meetings.push({
+          id: `m-hist-${att.meetingId}-${date}`,
+          meetingId: att.meetingId,
+          title: att.meetingTitle,
+          type: att.meetingType || "Alignment Session",
+          date: date,
+          scheduledStartTime: att.scheduledStartTime || "09:00 AM",
+          scheduledEndTime: att.scheduledEndTime || "09:30 AM",
+          duration: att.duration || "30 minutes",
+          organizer: att.organizer || "Admin Team",
+          userLevels: att.userLevels || [],
+          targetTeamTrackEligibility: att.targetTeamTrackEligibility || []
+        });
+      }
+    });
 
     // Apply timeframe bounds
     if (timeframe === "daily") {

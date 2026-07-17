@@ -87,6 +87,12 @@ export interface AttendanceRecord {
   status: "Attended" | "Late" | "Missed";
   track: string;
   meetingDate?: string; // Optional: to link to a specific date instance
+  scheduledStartTime?: string;
+  scheduledEndTime?: string;
+  duration?: string;
+  organizer?: string;
+  userLevels?: string[];
+  targetTeamTrackEligibility?: string[];
 }
 
 export interface MeetingHistoryRecord {
@@ -216,4 +222,20 @@ export interface MeetingAssignment {
   meetingId: string;
   userId: string;
 }
+
+export interface QueuedMeetingUpdate {
+  id: string;
+  meetingId: string;
+  type: "create" | "edit" | "delete";
+  meetingData?: any;
+  deleteMode?: "single" | "future" | "all";
+  recurrenceEditMode?: "single" | "future" | "all";
+  createdAt: string;
+  adminId: string;
+  adminEmail: string;
+  status: "pending" | "applied" | "failed";
+  error?: string;
+  errorTimestamp?: string;
+}
+
 

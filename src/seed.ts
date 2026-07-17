@@ -285,41 +285,50 @@ export async function seedDatabase(force = false) {
       }
       needsCommit = true;
     } else {
-      // Incremental checks to ensure empty databases are filled seamlessly without data loss
-      const appConfigDoc = await getDoc(doc(db, "metadata", "app_config"));
-      if (!appConfigDoc.exists()) {
-        console.log("Seeding app_config metadata...");
-        for (const meta of SEED_DATA.metadata) {
-          batch.set(doc(db, "metadata", meta.id), meta);
+      try {
+        // Incremental checks to ensure empty databases are filled seamlessly without data loss
+        const appConfigDoc = await getDoc(doc(db, "metadata", "app_config"));
+        if (!appConfigDoc.exists()) {
+          console.log("Seeding app_config metadata...");
+          for (const meta of SEED_DATA.metadata) {
+            batch.set(doc(db, "metadata", meta.id), meta);
+          }
+          needsCommit = true;
         }
-        needsCommit = true;
-      }
 
-      const projectsSnap = await getDocs(collection(db, "projects"));
-      if (projectsSnap.empty) {
-        console.log("Seeding default projects...");
-        for (const proj of SEED_DATA.projects) {
-          batch.set(doc(db, "projects", proj.id), proj);
+        const projectsSnap = await getDocs(collection(db, "projects"));
+        if (projectsSnap.empty) {
+          console.log("Seeding default projects...");
+          for (const proj of SEED_DATA.projects) {
+            batch.set(doc(db, "projects", proj.id), proj);
+          }
+          needsCommit = true;
         }
-        needsCommit = true;
-      }
 
-      const meetingsSnap = await getDocs(collection(db, "meetings"));
-      if (meetingsSnap.empty) {
-        console.log("Seeding default meetings...");
-        for (const meet of SEED_DATA.meetings) {
-          batch.set(doc(db, "meetings", meet.id), meet);
+        const meetingsSnap = await getDocs(collection(db, "meetings"));
+        if (meetingsSnap.empty) {
+          console.log("Seeding default meetings...");
+          for (const meet of SEED_DATA.meetings) {
+            batch.set(doc(db, "meetings", meet.id), meet);
+          }
+          needsCommit = true;
         }
-        needsCommit = true;
-      }
 
-      const drillsSnap = await getDocs(collection(db, "weeklyDrills"));
-      if (drillsSnap.empty) {
-        console.log("Seeding default weeklyDrills...");
-        for (const drill of SEED_DATA.weeklyDrills) {
-          batch.set(doc(db, "weeklyDrills", drill.id), drill);
+        const drillsSnap = await getDocs(collection(db, "weeklyDrills"));
+        if (drillsSnap.empty) {
+          console.log("Seeding default weeklyDrills...");
+          for (const drill of SEED_DATA.weeklyDrills) {
+            batch.set(doc(db, "weeklyDrills", drill.id), drill);
+          }
+          needsCommit = true;
         }
-        needsCommit = true;
+      } catch (err: any) {
+        const isOffline = err?.message?.toLowerCase().includes("offline") || err?.code === "unavailable";
+        if (isOffline) {
+          console.warn("Firestore is currently offline. Skipping auto-seeding until online connection is established: " + err.message);
+          return false;
+        }
+        throw err;
       }
     }
 
@@ -331,7 +340,12 @@ export async function seedDatabase(force = false) {
 
     console.log("All default data already seeded. Skipping...");
     return false;
-  } catch (error) {
+  } catch (error: any) {
+    const isOffline = error?.message?.toLowerCase().includes("offline") || error?.code === "unavailable";
+    if (isOffline) {
+      console.warn("Firestore is offline. Seeding skipped or postponed: " + error.message);
+      return false;
+    }
     console.error("Error seeding database:", error);
     throw error;
   }

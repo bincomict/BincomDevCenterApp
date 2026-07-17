@@ -64,7 +64,8 @@ export default function App() {
     kdCounts: {} as Record<string, number>,
     reminders: [] as { id: string; userId: string; message: string; timestamp: string; read: boolean }[],
     microserviceOwners: {} as Record<string, string>,
-    meetingAssignments: [] as MeetingAssignment[]
+    meetingAssignments: [] as MeetingAssignment[],
+    queuedMeetingUpdates: [] as any[]
   });
 
   const [activeTab, setActiveTab] = useState<"dashboard" | "hub" | "microservices" | "projects" | "leaderboard" | "pathway" | "admin">("dashboard");
@@ -86,6 +87,7 @@ export default function App() {
     | "tasks_config"
     | "microservices_config"
     | "pathways_config"
+    | "sync_logs"
   >("funnel");
   const [hubTab, setHubTab] = useState<"meetings" | "history">("meetings");
   
@@ -103,7 +105,14 @@ export default function App() {
           setActiveTab("admin");
           // Attempt automatic seed if admin is signed in (safe, skips if already seeded)
           import("./seed").then(({ seedDatabase }) => {
-            seedDatabase().catch(err => console.error("Auto seeding failed:", err));
+            seedDatabase().catch(err => {
+              const isOffline = err?.message?.toLowerCase().includes("offline") || err?.code === "unavailable";
+              if (isOffline) {
+                console.warn("Auto seeding deferred: Firestore is currently offline.");
+              } else {
+                console.error("Auto seeding failed:", err);
+              }
+            });
           });
         } else {
           setActiveTab("dashboard");
