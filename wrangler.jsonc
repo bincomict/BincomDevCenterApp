@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "bincomdevcenterapp",
+  "name": "bincomdevcenterappdev",
   "compatibility_date": "2026-07-08",
   "observability": {
     "enabled": true
